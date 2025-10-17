@@ -52,7 +52,6 @@ fi
 echo "📦 Installing Node.js dependencies..."
 if [ ! -d "node_modules" ]; then
     npm install
-    npm install --save-dev concurrently
 fi
 
 if [ ! -d "client/node_modules" ]; then
