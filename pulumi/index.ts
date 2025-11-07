@@ -1,0 +1,469 @@
+import * as pulumi from "@pulumi/pulumi";
+import * as aws from "@pulumi/aws";
+import * as awsx from "@pulumi/awsx";
+import * as docker from "@pulumi/docker";
+
+// Configuration
+const config = new pulumi.Config();
+const appName = "otel-ai-chatbot";
+const environment = pulumi.getStack();
+
+// Map stack name to NODE_ENV value
+// dev → development, prod/production → production, default → production
+const nodeEnv = environment === "dev" ? "development" : "production";
+
+// Tags for all resources
+const tags = {
+    Environment: environment,
+    Project: appName,
+    ManagedBy: "Pulumi",
+};
+
+// =============================================================================
+// ECR Repository and Docker Image
+// =============================================================================
+
+// Create ECR repository for backend container
+const ecrRepository = new aws.ecr.Repository(`${appName}-backend`, {
+    name: `${appName}-backend`,
+    imageTagMutability: "MUTABLE",
+    imageScanningConfiguration: {
+        scanOnPush: true, // Enable vulnerability scanning
+    },
+    encryptionConfigurations: [{
+        encryptionType: "AES256", // Server-side encryption
+    }],
+    forceDelete: true, // Allow deletion even with images (use cautiously in production)
+    tags: tags,
+});
+
+// Create lifecycle policy to clean up old images
+const lifecyclePolicy = new aws.ecr.LifecyclePolicy(`${appName}-lifecycle`, {
+    repository: ecrRepository.name,
+    policy: JSON.stringify({
+        rules: [{
+            rulePriority: 1,
+            description: "Keep last 10 images",
+            selection: {
+                tagStatus: "any",
+                countType: "imageCountMoreThan",
+                countNumber: 10,
+            },
+            action: {
+                type: "expire",
+            },
+        }],
+    }),
+});
+
+// Get ECR authorization token
+const authToken = aws.ecr.getAuthorizationTokenOutput({
+    registryId: ecrRepository.registryId,
+});
+
+// Build and push Docker image
+const image = new docker.Image(`${appName}-image`, {
+    imageName: pulumi.interpolate`${ecrRepository.repositoryUrl}:${environment}`,
+    build: {
+        context: "../", // Build from the parent directory (project root)
+        dockerfile: "../Dockerfile",
+        platform: "linux/amd64", // Build for x86_64 architecture
+        args: {
+            NODE_ENV: "production",
+        },
+    },
+    registry: {
+        server: ecrRepository.repositoryUrl,
+        username: authToken.userName,
+        password: authToken.password,
+    },
+}, { dependsOn: [ecrRepository] });
+
+// =============================================================================
+// VPC and Networking
+// =============================================================================
+
+const vpc = new awsx.ec2.Vpc(`${appName}-vpc`, {
+    cidrBlock: "10.0.0.0/16",
+    numberOfAvailabilityZones: 2,
+    natGateways: {
+        strategy: "Single", // Use single NAT gateway to reduce costs
+    },
+    tags: tags,
+});
+
+// =============================================================================
+// Security Groups
+// =============================================================================
+
+// ALB Security Group
+const albSecurityGroup = new aws.ec2.SecurityGroup(`${appName}-alb-sg`, {
+    vpcId: vpc.vpcId,
+    description: "Security group for Application Load Balancer",
+    ingress: [
+        {
+            protocol: "tcp",
+            fromPort: 80,
+            toPort: 80,
+            cidrBlocks: ["0.0.0.0/0"],
+            description: "Allow HTTP from anywhere",
+        },
+        {
+            protocol: "tcp",
+            fromPort: 443,
+            toPort: 443,
+            cidrBlocks: ["0.0.0.0/0"],
+            description: "Allow HTTPS from anywhere",
+        },
+    ],
+    egress: [{
+        protocol: "-1",
+        fromPort: 0,
+        toPort: 0,
+        cidrBlocks: ["0.0.0.0/0"],
+        description: "Allow all outbound traffic",
+    }],
+    tags: { ...tags, Name: `${appName}-alb-sg` },
+});
+
+// ECS Tasks Security Group
+const ecsSecurityGroup = new aws.ec2.SecurityGroup(`${appName}-ecs-sg`, {
+    vpcId: vpc.vpcId,
+    description: "Security group for ECS tasks",
+    ingress: [
+        {
+            protocol: "tcp",
+            fromPort: 3001,
+            toPort: 3001,
+            securityGroups: [albSecurityGroup.id],
+            description: "Allow traffic from ALB to backend",
+        },
+    ],
+    egress: [{
+        protocol: "-1",
+        fromPort: 0,
+        toPort: 0,
+        cidrBlocks: ["0.0.0.0/0"],
+        description: "Allow all outbound traffic",
+    }],
+    tags: { ...tags, Name: `${appName}-ecs-sg` },
+});
+
+// OpenSearch Security Group
+const openSearchSecurityGroup = new aws.ec2.SecurityGroup(`${appName}-opensearch-sg`, {
+    vpcId: vpc.vpcId,
+    description: "Security group for OpenSearch",
+    ingress: [
+        {
+            protocol: "tcp",
+            fromPort: 443,
+            toPort: 443,
+            securityGroups: [ecsSecurityGroup.id],
+            description: "Allow HTTPS from ECS tasks",
+        },
+    ],
+    egress: [{
+        protocol: "-1",
+        fromPort: 0,
+        toPort: 0,
+        cidrBlocks: ["0.0.0.0/0"],
+        description: "Allow all outbound traffic",
+    }],
+    tags: { ...tags, Name: `${appName}-opensearch-sg` },
+});
+
+// =============================================================================
+// IAM Roles
+// =============================================================================
+
+// ECS Task Execution Role
+const ecsTaskExecutionRole = new aws.iam.Role(`${appName}-ecs-execution-role`, {
+    assumeRolePolicy: JSON.stringify({
+        Version: "2012-10-17",
+        Statement: [{
+            Effect: "Allow",
+            Principal: { Service: "ecs-tasks.amazonaws.com" },
+            Action: "sts:AssumeRole",
+        }],
+    }),
+    tags: tags,
+});
+
+new aws.iam.RolePolicyAttachment(`${appName}-ecs-execution-policy`, {
+    role: ecsTaskExecutionRole.name,
+    policyArn: "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy",
+});
+
+// ECS Task Role (for application permissions)
+const ecsTaskRole = new aws.iam.Role(`${appName}-ecs-task-role`, {
+    assumeRolePolicy: JSON.stringify({
+        Version: "2012-10-17",
+        Statement: [{
+            Effect: "Allow",
+            Principal: { Service: "ecs-tasks.amazonaws.com" },
+            Action: "sts:AssumeRole",
+        }],
+    }),
+    tags: tags,
+});
+
+// =============================================================================
+// Secrets Manager
+// =============================================================================
+
+// Create secrets for API keys
+const secretsManagerSecret = new aws.secretsmanager.Secret(`${appName}-secrets`, {
+    description: "API keys and configuration for OpenTelemetry AI Chatbot",
+    tags: tags,
+});
+
+// Note: You'll need to manually populate this secret with actual values
+const secretVersion = new aws.secretsmanager.SecretVersion(`${appName}-secrets-version`, {
+    secretId: secretsManagerSecret.id,
+    secretString: JSON.stringify({
+        OPENAI_API_KEY: config.get("openaiApiKey") || "YOUR_OPENAI_API_KEY",
+        ANTHROPIC_API_KEY: config.get("anthropicApiKey") || "YOUR_ANTHROPIC_API_KEY",
+        AWS_ACCESS_KEY_ID: config.get("awsAccessKeyId") || "YOUR_AWS_ACCESS_KEY",
+        AWS_SECRET_ACCESS_KEY: config.get("awsSecretKey") || "YOUR_AWS_SECRET_KEY",
+    }),
+});
+
+// Grant ECS task access to secrets
+const secretsPolicy = new aws.iam.RolePolicy(`${appName}-secrets-policy`, {
+    role: ecsTaskExecutionRole.id,
+    policy: secretsManagerSecret.arn.apply(arn => JSON.stringify({
+        Version: "2012-10-17",
+        Statement: [{
+            Effect: "Allow",
+            Action: [
+                "secretsmanager:GetSecretValue",
+                "secretsmanager:DescribeSecret",
+            ],
+            Resource: arn,
+        }],
+    })),
+});
+
+// =============================================================================
+// OpenSearch Domain
+// =============================================================================
+
+const openSearchDomain = new aws.opensearch.Domain(`${appName}-opensearch`, {
+    domainName: `${appName}-${environment}`,
+    engineVersion: "OpenSearch_2.11",
+    clusterConfig: {
+        instanceType: "t3.small.search", // Use t3.small for cost optimization
+        instanceCount: 1, // Single instance for development
+        dedicatedMasterEnabled: false,
+        zoneAwarenessEnabled: false,
+    },
+    ebsOptions: {
+        ebsEnabled: true,
+        volumeSize: 10, // 10 GB storage
+        volumeType: "gp3",
+    },
+    encryptAtRest: {
+        enabled: true,
+    },
+    nodeToNodeEncryption: {
+        enabled: true,
+    },
+    domainEndpointOptions: {
+        enforceHttps: true,
+        tlsSecurityPolicy: "Policy-Min-TLS-1-2-2019-07",
+    },
+    vpcOptions: {
+        subnetIds: [vpc.privateSubnetIds[0]],
+        securityGroupIds: [openSearchSecurityGroup.id],
+    },
+    advancedSecurityOptions: {
+        enabled: true,
+        internalUserDatabaseEnabled: true,
+        masterUserOptions: {
+            masterUserName: config.get("opensearchMasterUser") || "admin",
+            masterUserPassword: config.requireSecret("opensearchMasterPassword"),
+        },
+    },
+    accessPolicies: pulumi.interpolate`{
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Principal": {
+                    "AWS": "${ecsTaskRole.arn}"
+                },
+                "Action": "es:*",
+                "Resource": "arn:aws:es:${aws.getRegionOutput().name}:${aws.getCallerIdentityOutput().accountId}:domain/${appName}-${environment}/*"
+            }
+        ]
+    }`,
+    tags: tags,
+});
+
+// Grant ECS task access to OpenSearch
+const openSearchPolicy = new aws.iam.RolePolicy(`${appName}-opensearch-policy`, {
+    role: ecsTaskRole.id,
+    policy: openSearchDomain.arn.apply(arn => JSON.stringify({
+        Version: "2012-10-17",
+        Statement: [{
+            Effect: "Allow",
+            Action: [
+                "es:ESHttpGet",
+                "es:ESHttpPut",
+                "es:ESHttpPost",
+                "es:ESHttpDelete",
+            ],
+            Resource: `${arn}/*`,
+        }],
+    })),
+});
+
+// =============================================================================
+// Application Load Balancer
+// =============================================================================
+
+const alb = new aws.lb.LoadBalancer(`${appName}-alb`, {
+    loadBalancerType: "application",
+    subnets: vpc.publicSubnetIds,
+    securityGroups: [albSecurityGroup.id],
+    tags: tags,
+});
+
+const targetGroup = new aws.lb.TargetGroup(`${appName}-tg`, {
+    port: 3001,
+    protocol: "HTTP",
+    targetType: "ip",
+    vpcId: vpc.vpcId,
+    healthCheck: {
+        enabled: true,
+        path: "/api/health",
+        healthyThreshold: 2,
+        unhealthyThreshold: 3,
+        timeout: 5,
+        interval: 30,
+        matcher: "200",
+    },
+    tags: tags,
+});
+
+const listener = new aws.lb.Listener(`${appName}-listener`, {
+    loadBalancerArn: alb.arn,
+    port: 80,
+    protocol: "HTTP",
+    defaultActions: [{
+        type: "forward",
+        targetGroupArn: targetGroup.arn,
+    }],
+    tags: tags,
+});
+
+// =============================================================================
+// ECS Cluster and Service
+// =============================================================================
+
+const cluster = new aws.ecs.Cluster(`${appName}-cluster`, {
+    settings: [{
+        name: "containerInsights",
+        value: "enabled",
+    }],
+    tags: tags,
+});
+
+// CloudWatch Log Group for ECS tasks
+const logGroup = new aws.cloudwatch.LogGroup(`${appName}-logs`, {
+    retentionInDays: 7,
+    tags: tags,
+});
+
+// ECS Task Definition
+const taskDefinition = new aws.ecs.TaskDefinition(`${appName}-task`, {
+    family: `${appName}-backend`,
+    cpu: "512",
+    memory: "1024",
+    networkMode: "awsvpc",
+    requiresCompatibilities: ["FARGATE"],
+    executionRoleArn: ecsTaskExecutionRole.arn,
+    taskRoleArn: ecsTaskRole.arn,
+    containerDefinitions: pulumi.all([
+        logGroup.name,
+        openSearchDomain.endpoint,
+        secretsManagerSecret.arn,
+        image.repoDigest,
+    ]).apply(([logGroupName, opensearchEndpoint, secretArn, imageDigest]) => JSON.stringify([{
+        name: "backend",
+        image: imageDigest, // Use the built and pushed Docker image
+        essential: true,
+        portMappings: [{
+            containerPort: 3001,
+            protocol: "tcp",
+        }],
+        environment: [
+            { name: "PORT", value: "3001" },
+            { name: "NODE_ENV", value: nodeEnv },
+            { name: "DEFAULT_LLM_PROVIDER", value: "openai" },
+            { name: "OPENSEARCH_ENDPOINT", value: `https://${opensearchEndpoint}` },
+            { name: "OPENSEARCH_INDEX", value: "otel_knowledge" },
+        ],
+        secrets: [
+            {
+                name: "OPENAI_API_KEY",
+                valueFrom: `${secretArn}:OPENAI_API_KEY::`,
+            },
+            {
+                name: "ANTHROPIC_API_KEY",
+                valueFrom: `${secretArn}:ANTHROPIC_API_KEY::`,
+            },
+        ],
+        logConfiguration: {
+            logDriver: "awslogs",
+            options: {
+                "awslogs-group": logGroupName,
+                "awslogs-region": aws.getRegionOutput().name,
+                "awslogs-stream-prefix": "backend",
+            },
+        },
+    }])),
+    tags: tags,
+});
+
+// ECS Service
+const service = new aws.ecs.Service(`${appName}-service`, {
+    cluster: cluster.arn,
+    taskDefinition: taskDefinition.arn,
+    desiredCount: 1,
+    launchType: "FARGATE",
+    networkConfiguration: {
+        subnets: vpc.privateSubnetIds,
+        securityGroups: [ecsSecurityGroup.id],
+        assignPublicIp: false,
+    },
+    loadBalancers: [{
+        targetGroupArn: targetGroup.arn,
+        containerName: "backend",
+        containerPort: 3001,
+    }],
+    tags: tags,
+}, { dependsOn: [listener] });
+
+
+// =============================================================================
+// Outputs
+// =============================================================================
+
+// Container Registry
+export const ecrRepositoryUrl = ecrRepository.repositoryUrl;
+export const ecrRepositoryName = ecrRepository.name;
+export const containerImageDigest = image.repoDigest;
+
+// Infrastructure
+export const vpcId = vpc.vpcId;
+export const albDnsName = alb.dnsName;
+export const albUrl = pulumi.interpolate`http://${alb.dnsName}`; // ALB serves both frontend and backend
+export const openSearchEndpoint = openSearchDomain.endpoint;
+export const openSearchDashboard = openSearchDomain.dashboardEndpoint;
+export const ecsClusterName = cluster.name;
+export const secretsManagerSecretArn = secretsManagerSecret.arn;
+
+// Useful commands (optional - automated builds handle Docker)
+export const ecrLoginCommand = pulumi.interpolate`aws ecr get-login-password --region ${aws.getRegionOutput().name} | docker login --username AWS --password-stdin ${ecrRepository.repositoryUrl}`;
+export const dockerBuildCommand = pulumi.interpolate`docker build -t ${ecrRepository.repositoryUrl}:latest ../ && docker push ${ecrRepository.repositoryUrl}:latest`;

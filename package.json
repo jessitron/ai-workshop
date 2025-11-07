@@ -33,6 +33,7 @@
     "@langchain/core": "^0.3.2",
     "@langchain/openai": "^0.0.14",
     "@langchain/textsplitters": "^0.1.0",
+    "@opensearch-project/opensearch": "^2.5.0",
     "axios": "^1.6.2",
     "cheerio": "^1.0.0-rc.12",
     "chromadb": "^1.7.3",
