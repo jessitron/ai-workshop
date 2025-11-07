@@ -23,9 +23,9 @@ const tags = {
 // ECR Repository and Docker Image
 // =============================================================================
 
-// Create ECR repository for backend container
-const ecrRepository = new aws.ecr.Repository(`${appName}-backend`, {
-    name: `${appName}-backend`,
+// Create ECR repository for application container (serves both frontend and backend)
+const ecrRepository = new aws.ecr.Repository(`${appName}-app`, {
+    name: `${appName}-app`,
     imageTagMutability: "MUTABLE",
     imageScanningConfiguration: {
         scanOnPush: true, // Enable vulnerability scanning
@@ -72,12 +72,13 @@ const image = new docker.Image(`${appName}-image`, {
             NODE_ENV: "production",
         },
     },
+    //skipPush: true,
     registry: {
         server: ecrRepository.repositoryUrl,
         username: authToken.userName,
         password: authToken.password,
     },
-}, { dependsOn: [ecrRepository] });
+}, {dependsOn: [ecrRepository]});
 
 // =============================================================================
 // VPC and Networking
@@ -123,7 +124,7 @@ const albSecurityGroup = new aws.ec2.SecurityGroup(`${appName}-alb-sg`, {
         cidrBlocks: ["0.0.0.0/0"],
         description: "Allow all outbound traffic",
     }],
-    tags: { ...tags, Name: `${appName}-alb-sg` },
+    tags: {...tags, Name: `${appName}-alb-sg`},
 });
 
 // ECS Tasks Security Group
@@ -136,7 +137,7 @@ const ecsSecurityGroup = new aws.ec2.SecurityGroup(`${appName}-ecs-sg`, {
             fromPort: 3001,
             toPort: 3001,
             securityGroups: [albSecurityGroup.id],
-            description: "Allow traffic from ALB to backend",
+            description: "Allow traffic from ALB to application",
         },
     ],
     egress: [{
@@ -146,7 +147,7 @@ const ecsSecurityGroup = new aws.ec2.SecurityGroup(`${appName}-ecs-sg`, {
         cidrBlocks: ["0.0.0.0/0"],
         description: "Allow all outbound traffic",
     }],
-    tags: { ...tags, Name: `${appName}-ecs-sg` },
+    tags: {...tags, Name: `${appName}-ecs-sg`},
 });
 
 // OpenSearch Security Group
@@ -169,7 +170,7 @@ const openSearchSecurityGroup = new aws.ec2.SecurityGroup(`${appName}-opensearch
         cidrBlocks: ["0.0.0.0/0"],
         description: "Allow all outbound traffic",
     }],
-    tags: { ...tags, Name: `${appName}-opensearch-sg` },
+    tags: {...tags, Name: `${appName}-opensearch-sg`},
 });
 
 // =============================================================================
@@ -182,7 +183,7 @@ const ecsTaskExecutionRole = new aws.iam.Role(`${appName}-ecs-execution-role`, {
         Version: "2012-10-17",
         Statement: [{
             Effect: "Allow",
-            Principal: { Service: "ecs-tasks.amazonaws.com" },
+            Principal: {Service: "ecs-tasks.amazonaws.com"},
             Action: "sts:AssumeRole",
         }],
     }),
@@ -200,7 +201,7 @@ const ecsTaskRole = new aws.iam.Role(`${appName}-ecs-task-role`, {
         Version: "2012-10-17",
         Statement: [{
             Effect: "Allow",
-            Principal: { Service: "ecs-tasks.amazonaws.com" },
+            Principal: {Service: "ecs-tasks.amazonaws.com"},
             Action: "sts:AssumeRole",
         }],
     }),
@@ -220,11 +221,20 @@ const secretsManagerSecret = new aws.secretsmanager.Secret(`${appName}-secrets`,
 // Note: You'll need to manually populate this secret with actual values
 const secretVersion = new aws.secretsmanager.SecretVersion(`${appName}-secrets-version`, {
     secretId: secretsManagerSecret.id,
-    secretString: JSON.stringify({
-        OPENAI_API_KEY: config.get("openaiApiKey") || "YOUR_OPENAI_API_KEY",
-        ANTHROPIC_API_KEY: config.get("anthropicApiKey") || "YOUR_ANTHROPIC_API_KEY",
-        AWS_ACCESS_KEY_ID: config.get("awsAccessKeyId") || "YOUR_AWS_ACCESS_KEY",
-        AWS_SECRET_ACCESS_KEY: config.get("awsSecretKey") || "YOUR_AWS_SECRET_KEY",
+    secretString: pulumi.all([
+        config.getSecret("open-ai-token"),
+        config.get("anthropic-api-key"), // Use get() instead of getSecret() since it's stored as plaintext
+        config.requireSecret("opensearchMasterPassword")
+    ]).apply(([openaiKey, anthropicKey, opensearchPassword]) => {
+        // Always include all keys to ensure ECS can pull secrets successfully
+        // Use empty string as fallback if API keys are not set
+        const secretObj = {
+            OPENAI_API_KEY: openaiKey || "",
+            ANTHROPIC_API_KEY: anthropicKey || "",
+            OPENSEARCH_PASSWORD: opensearchPassword,
+        };
+
+        return JSON.stringify(secretObj);
     }),
 });
 
@@ -278,10 +288,9 @@ const openSearchDomain = new aws.opensearch.Domain(`${appName}-opensearch`, {
     },
     advancedSecurityOptions: {
         enabled: true,
-        internalUserDatabaseEnabled: true,
+        internalUserDatabaseEnabled: false,
         masterUserOptions: {
-            masterUserName: config.get("opensearchMasterUser") || "admin",
-            masterUserPassword: config.requireSecret("opensearchMasterPassword"),
+            masterUserArn: ecsTaskRole.arn,
         },
     },
     accessPolicies: pulumi.interpolate`{
@@ -377,7 +386,7 @@ const logGroup = new aws.cloudwatch.LogGroup(`${appName}-logs`, {
 
 // ECS Task Definition
 const taskDefinition = new aws.ecs.TaskDefinition(`${appName}-task`, {
-    family: `${appName}-backend`,
+    family: `${appName}-app`,
     cpu: "512",
     memory: "1024",
     networkMode: "awsvpc",
@@ -389,8 +398,9 @@ const taskDefinition = new aws.ecs.TaskDefinition(`${appName}-task`, {
         openSearchDomain.endpoint,
         secretsManagerSecret.arn,
         image.repoDigest,
-    ]).apply(([logGroupName, opensearchEndpoint, secretArn, imageDigest]) => JSON.stringify([{
-        name: "backend",
+        aws.getRegionOutput().name,
+    ]).apply(([logGroupName, opensearchEndpoint, secretArn, imageDigest, awsRegion]) => JSON.stringify([{
+        name: "app",
         image: imageDigest, // Use the built and pushed Docker image
         essential: true,
         portMappings: [{
@@ -398,11 +408,14 @@ const taskDefinition = new aws.ecs.TaskDefinition(`${appName}-task`, {
             protocol: "tcp",
         }],
         environment: [
-            { name: "PORT", value: "3001" },
-            { name: "NODE_ENV", value: nodeEnv },
-            { name: "DEFAULT_LLM_PROVIDER", value: "openai" },
-            { name: "OPENSEARCH_ENDPOINT", value: `https://${opensearchEndpoint}` },
-            { name: "OPENSEARCH_INDEX", value: "otel_knowledge" },
+            {name: "PORT", value: "3001"},
+            {name: "NODE_ENV", value: nodeEnv},
+            {name: "LOG_LEVEL", value: "debug"}, // Set to "debug" for verbose logging, "info" for production
+            {name: "DEFAULT_LLM_PROVIDER", value: "openai"},
+            {name: "OPENSEARCH_ENDPOINT", value: `https://${opensearchEndpoint}`},
+            {name: "OPENSEARCH_INDEX", value: "otel_knowledge"},
+            {name: "OPENSEARCH_USERNAME", value: "admin"},
+            {name: "AWS_REGION", value: awsRegion},
         ],
         secrets: [
             {
@@ -413,13 +426,17 @@ const taskDefinition = new aws.ecs.TaskDefinition(`${appName}-task`, {
                 name: "ANTHROPIC_API_KEY",
                 valueFrom: `${secretArn}:ANTHROPIC_API_KEY::`,
             },
+            {
+                name: "OPENSEARCH_PASSWORD",
+                valueFrom: `${secretArn}:OPENSEARCH_PASSWORD::`,
+            },
         ],
         logConfiguration: {
             logDriver: "awslogs",
             options: {
                 "awslogs-group": logGroupName,
-                "awslogs-region": aws.getRegionOutput().name,
-                "awslogs-stream-prefix": "backend",
+                "awslogs-region": awsRegion,
+                "awslogs-stream-prefix": "app",
             },
         },
     }])),
@@ -439,11 +456,11 @@ const service = new aws.ecs.Service(`${appName}-service`, {
     },
     loadBalancers: [{
         targetGroupArn: targetGroup.arn,
-        containerName: "backend",
+        containerName: "app",
         containerPort: 3001,
     }],
     tags: tags,
-}, { dependsOn: [listener] });
+}, {dependsOn: [listener]});
 
 
 // =============================================================================
@@ -454,6 +471,8 @@ const service = new aws.ecs.Service(`${appName}-service`, {
 export const ecrRepositoryUrl = ecrRepository.repositoryUrl;
 export const ecrRepositoryName = ecrRepository.name;
 export const containerImageDigest = image.repoDigest;
+
+
 
 // Infrastructure
 export const vpcId = vpc.vpcId;
@@ -467,3 +486,4 @@ export const secretsManagerSecretArn = secretsManagerSecret.arn;
 // Useful commands (optional - automated builds handle Docker)
 export const ecrLoginCommand = pulumi.interpolate`aws ecr get-login-password --region ${aws.getRegionOutput().name} | docker login --username AWS --password-stdin ${ecrRepository.repositoryUrl}`;
 export const dockerBuildCommand = pulumi.interpolate`docker build -t ${ecrRepository.repositoryUrl}:latest ../ && docker push ${ecrRepository.repositoryUrl}:latest`;
+

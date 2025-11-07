@@ -1,4 +1,4 @@
-node_modules
+**/node_modules
 npm-debug.log
 .env
 .env.*
@@ -30,3 +30,5 @@ pulumi/bin
 
 # Documentation
 docs/
+pulumi/**
+.memory

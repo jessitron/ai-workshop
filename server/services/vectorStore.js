@@ -1,4 +1,6 @@
-import { Chroma } from '@langchain/community/vectorstores/chroma';
+import { Client } from '@opensearch-project/opensearch';
+import { defaultProvider } from '@aws-sdk/credential-provider-node';
+import { AwsSigv4Signer } from '@opensearch-project/opensearch/aws';
 import { OpenAIEmbeddings } from '@langchain/openai';
 import { BedrockEmbeddings } from '@langchain/aws';
 import { RecursiveCharacterTextSplitter } from '@langchain/textsplitters';
@@ -6,21 +8,55 @@ import { Document } from '@langchain/core/documents';
 import { config } from '../config/index.js';
 import logger from '../config/logger.js';
 
-class VectorStoreService {
+class OpenSearchVectorStore {
   constructor() {
-    this.vectorStore = null;
+    this.client = null;
     this.embeddings = null;
     this.textSplitter = null;
+    this.indexName = null;
     this.initialized = false;
   }
 
   async initialize() {
     try {
+      // Get OpenSearch configuration from environment
+      const opensearchEndpoint = process.env.OPENSEARCH_ENDPOINT || 'https://localhost:9200';
+      const opensearchUsername = process.env.OPENSEARCH_USERNAME || 'admin';
+      const opensearchPassword = process.env.OPENSEARCH_PASSWORD;
+      this.indexName = process.env.OPENSEARCH_INDEX || config.vectorDb.collectionName || 'otel_knowledge';
+
+      // Debug logging for credentials
+      logger.debug('OpenSearch configuration:', {
+        endpoint: opensearchEndpoint,
+        indexName: this.indexName,
+        authMethod: 'AWS SigV4 (IAM)',
+      });
+
+      // Initialize OpenSearch client with AWS SigV4 signing for VPC + Fine-Grained Access Control
+      this.client = new Client({
+        ...AwsSigv4Signer({
+          region: process.env.AWS_REGION || 'us-east-1',
+          service: 'es',
+          getCredentials: () => {
+            const credentialsProvider = defaultProvider();
+            return credentialsProvider();
+          },
+        }),
+        node: opensearchEndpoint,
+        ssl: {
+          rejectUnauthorized: false, // Set to true in production with valid certificates
+        },
+      });
+
+      // Test connection
+      await this.client.info();
+      logger.info('Connected to OpenSearch');
+
       // Initialize embeddings
       if (config.llm.defaultProvider === 'openai' || config.llm.defaultProvider === 'anthropic') {
         this.embeddings = new OpenAIEmbeddings({
           openAIApiKey: config.llm.openai.apiKey,
-          modelName: 'text-embedding-ada-002'
+          modelName: 'text-embedding-ada-002',
         });
       } else if (config.llm.defaultProvider === 'bedrock') {
         this.embeddings = new BedrockEmbeddings({
@@ -28,46 +64,74 @@ class VectorStoreService {
           region: config.llm.bedrock.region,
           credentials: {
             accessKeyId: config.llm.bedrock.accessKeyId,
-            secretAccessKey: config.llm.bedrock.secretAccessKey
-          }
-        })
+            secretAccessKey: config.llm.bedrock.secretAccessKey,
+          },
+        });
       } else {
-        throw new Error(`Unsupported LLM provider: ${config.default.llm.provider}`);
+        throw new Error(`Unsupported LLM provider: ${config.llm.defaultProvider}`);
       }
 
       // Initialize text splitter
       this.textSplitter = new RecursiveCharacterTextSplitter({
-        chunkSize: 500,  // Reduced chunk size
-        chunkOverlap: 50,  // Reduced overlap
-        separators: ["\n\n", "\n", " ", ""] // Keep standard separators
+        chunkSize: 500,
+        chunkOverlap: 50,
+        separators: ["\n\n", "\n", " ", ""],
       });
 
-      try {
-        // Try to create a new collection
-        this.vectorStore = await Chroma.fromDocuments(
-          [], // Empty initial documents
-          this.embeddings,
-          {
-            collectionName: config.vectorDb.collectionName,
-            url: 'http://localhost:8000',
-          }
-        );
-        this.initialized = true;
-        logger.info('Vector store initialized with new collection');
-      } catch (error) {
-        // If collection exists, try to connect to it
-        this.vectorStore = await Chroma.fromExistingCollection(
-          this.embeddings,
-          {
-            collectionName: config.vectorDb.collectionName,
-            url: 'http://localhost:8000',
-          }
-        );
-        this.initialized = true;
-        logger.info('Connected to existing vector store collection');
+      // Create index if it doesn't exist
+      await this.createIndexIfNotExists();
+
+      this.initialized = true;
+      logger.info('OpenSearch vector store initialized');
+    } catch (error) {
+      logger.error('Failed to initialize OpenSearch vector store:', error);
+      throw error;
+    }
+  }
+
+  async createIndexIfNotExists() {
+    try {
+      const indexExists = await this.client.indices.exists({ index: this.indexName });
+
+      if (!indexExists.body) {
+        // Create index with k-NN settings
+        await this.client.indices.create({
+          index: this.indexName,
+          body: {
+            settings: {
+              index: {
+                knn: true, // Enable k-NN
+                "knn.algo_param.ef_search": 100, // Improves recall at the cost of latency
+              },
+            },
+            mappings: {
+              properties: {
+                content: { type: 'text' },
+                embedding: {
+                  type: 'knn_vector',
+                  dimension: 1536, // OpenAI text-embedding-ada-002 dimension
+                  method: {
+                    name: 'hnsw',
+                    space_type: 'l2',
+                    engine: 'nmslib',
+                    parameters: {
+                      ef_construction: 128,
+                      m: 24,
+                    },
+                  },
+                },
+                metadata: { type: 'object', enabled: true },
+                timestamp: { type: 'date' },
+              },
+            },
+          },
+        });
+        logger.info(`Created OpenSearch index: ${this.indexName}`);
+      } else {
+        logger.info(`OpenSearch index already exists: ${this.indexName}`);
       }
     } catch (error) {
-      logger.error('Failed to initialize vector store:', error);
+      logger.error('Error creating OpenSearch index:', error);
       throw error;
     }
   }
@@ -78,16 +142,16 @@ class VectorStoreService {
     }
 
     try {
-      // Process each document
       const processedDocs = [];
-      
+
       for (const doc of documents) {
         // Split text into chunks
         const textChunks = await this.textSplitter.splitText(doc.pageContent);
-        
+
         // Create documents from chunks
-        const docs = textChunks.map((chunk, index) => {
-          return new Document({
+        for (let index = 0; index < textChunks.length; index++) {
+          const chunk = textChunks[index];
+          const chunkDoc = new Document({
             pageContent: chunk,
             metadata: {
               ...doc.metadata,
@@ -95,22 +159,58 @@ class VectorStoreService {
               chunk_total: textChunks.length,
               chunk_size: chunk.length,
               document_id: doc.metadata.id || `doc-${Date.now()}-${index}`,
-            }
+            },
           });
-        });
-        
-        processedDocs.push(...docs);
+          processedDocs.push(chunkDoc);
+        }
       }
 
-      // Add documents to vector store
-      if (processedDocs.length > 0) {
-        await this.vectorStore.addDocuments(processedDocs);
-        logger.info(`Added ${processedDocs.length} chunks to vector store`);
+      // Generate embeddings and index documents
+      const bulkBody = [];
+      for (const doc of processedDocs) {
+        // Generate embedding
+        const embedding = await this.embeddings.embedQuery(doc.pageContent);
+
+        // Add index action
+        bulkBody.push({ index: { _index: this.indexName } });
+
+        // Add document
+        bulkBody.push({
+          content: doc.pageContent,
+          embedding: embedding,
+          metadata: doc.metadata,
+          timestamp: new Date().toISOString(),
+        });
+      }
+
+      // Bulk index
+      if (bulkBody.length > 0) {
+        const response = await this.client.bulk({
+          refresh: true,
+          body: bulkBody,
+        });
+
+        if (response.body.errors) {
+          const erroredDocuments = [];
+          response.body.items.forEach((action, i) => {
+            const operation = Object.keys(action)[0];
+            if (action[operation].error) {
+              erroredDocuments.push({
+                status: action[operation].status,
+                error: action[operation].error,
+                document: bulkBody[i * 2 + 1],
+              });
+            }
+          });
+          logger.error('Bulk indexing had errors:', erroredDocuments);
+        }
+
+        logger.info(`Indexed ${processedDocs.length} chunks to OpenSearch`);
       }
 
       return processedDocs.length;
     } catch (error) {
-      logger.error('Error adding documents to vector store:', error);
+      logger.error('Error adding documents to OpenSearch:', error);
       throw error;
     }
   }
@@ -121,7 +221,32 @@ class VectorStoreService {
     }
 
     try {
-      const results = await this.vectorStore.similaritySearch(query, k);
+      // Generate query embedding
+      const queryEmbedding = await this.embeddings.embedQuery(query);
+
+      // Perform k-NN search
+      const response = await this.client.search({
+        index: this.indexName,
+        body: {
+          size: k,
+          query: {
+            knn: {
+              embedding: {
+                vector: queryEmbedding,
+                k: k,
+              },
+            },
+          },
+        },
+      });
+
+      const results = response.body.hits.hits.map((hit) => {
+        return new Document({
+          pageContent: hit._source.content,
+          metadata: hit._source.metadata || {},
+        });
+      });
+
       logger.debug(`Found ${results.length} similar documents for query: "${query}"`);
       return results;
     } catch (error) {
@@ -136,33 +261,36 @@ class VectorStoreService {
     }
 
     try {
-      // Using the vectorStore's underlying client for direct search
+      // Generate query embedding
       const queryEmbedding = await this.embeddings.embedQuery(query);
-      /*
-      const col = await this.vectorStore.ensureCollection();
-      const results = await col.query({
-        queryEmbeddings: [queryEmbedding],
-        k,
-      });
-      logger.info(`Found ${results.ids?.length} similar documents with scores for query: "${query}"`);
-      const tuples = (results.ids?.[0] || []).map((_, i) => [
-        new Document({
-          pageContent: results.documents?.[0]?.[i] || "",
-          metadata: results.metadatas?.[0]?.[i] || {},
-        }),
-        results.distances?.[0]?.[i] || 0,
-      ]);
 
-      return tuples;
-      */
-      /*
-      if ('filter' in this.vectorStore && this.vectorStore.filter && !Object.keys(this.vectorStore.filter).length) {
-        // remove accidental empty filter {}
-        // @ts-ignore
-        delete this.vectorStore.filter;
-      }
-      */
-      const results = await this.vectorStore.similaritySearchVectorWithScore(queryEmbedding, k, { search: "all" });
+      // Perform k-NN search
+      const response = await this.client.search({
+        index: this.indexName,
+        body: {
+          size: k,
+          query: {
+            knn: {
+              embedding: {
+                vector: queryEmbedding,
+                k: k,
+              },
+            },
+          },
+        },
+      });
+
+      const results = response.body.hits.hits.map((hit) => {
+        const doc = new Document({
+          pageContent: hit._source.content,
+          metadata: hit._source.metadata || {},
+        });
+        // OpenSearch returns a score, higher is better
+        // Convert to distance-like metric (lower is better) for consistency with ChromaDB
+        const score = 1 - (hit._score || 0);
+        return [doc, score];
+      });
+
       logger.info(`Found ${results.length} similar documents with scores for query: "${query}"`);
       return results;
     } catch (error) {
@@ -177,11 +305,11 @@ class VectorStoreService {
     }
 
     try {
-      await this.vectorStore.delete();
+      await this.client.indices.delete({ index: this.indexName });
       this.initialized = false;
-      logger.info('Vector store collection deleted');
+      logger.info('OpenSearch index deleted');
     } catch (error) {
-      logger.error('Error deleting vector store collection:', error);
+      logger.error('Error deleting OpenSearch index:', error);
       throw error;
     }
   }
@@ -192,9 +320,12 @@ class VectorStoreService {
     }
 
     try {
+      const stats = await this.client.indices.stats({ index: this.indexName });
       return {
-        collectionName: config.vectorDb.collectionName,
-        initialized: this.initialized
+        indexName: this.indexName,
+        initialized: this.initialized,
+        documentCount: stats.body._all.primaries.docs.count,
+        sizeInBytes: stats.body._all.primaries.store.size_in_bytes,
       };
     } catch (error) {
       logger.error('Error getting collection info:', error);
@@ -203,4 +334,4 @@ class VectorStoreService {
   }
 }
 
-export default new VectorStoreService();
+export default new OpenSearchVectorStore();

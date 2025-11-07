@@ -1,4 +1,6 @@
 import { Client } from '@opensearch-project/opensearch';
+import { defaultProvider } from '@aws-sdk/credential-provider-node';
+import { AwsSigv4Signer } from '@opensearch-project/opensearch/aws';
 import { OpenAIEmbeddings } from '@langchain/openai';
 import { BedrockEmbeddings } from '@langchain/aws';
 import { RecursiveCharacterTextSplitter } from '@langchain/textsplitters';
@@ -19,25 +21,29 @@ class OpenSearchVectorStore {
     try {
       // Get OpenSearch configuration from environment
       const opensearchEndpoint = process.env.OPENSEARCH_ENDPOINT || 'https://localhost:9200';
-      const opensearchUsername = process.env.OPENSEARCH_USERNAME || 'admin';
-      const opensearchPassword = process.env.OPENSEARCH_PASSWORD;
       this.indexName = process.env.OPENSEARCH_INDEX || config.vectorDb.collectionName || 'otel_knowledge';
 
-      // Initialize OpenSearch client
+      // Extract region from OpenSearch endpoint (e.g., vpc-xxx.us-east-1.es.amazonaws.com)
+      const region = opensearchEndpoint.match(/\.([a-z]+-[a-z]+-\d+)\.es\.amazonaws\.com/)?.[1] || process.env.AWS_REGION || 'us-east-1';
+
+      logger.info(`Initializing OpenSearch client with AWS SigV4 auth for region: ${region}`);
+
+      // Initialize OpenSearch client with AWS SigV4 signing
       this.client = new Client({
+        ...AwsSigv4Signer({
+          region: region,
+          service: 'es',
+          getCredentials: () => {
+            const credentialsProvider = defaultProvider();
+            return credentialsProvider();
+          },
+        }),
         node: opensearchEndpoint,
-        auth: {
-          username: opensearchUsername,
-          password: opensearchPassword,
-        },
-        ssl: {
-          rejectUnauthorized: false, // Set to true in production with valid certificates
-        },
       });
 
       // Test connection
       await this.client.info();
-      logger.info('Connected to OpenSearch');
+      logger.info('Connected to OpenSearch with AWS SigV4 authentication');
 
       // Initialize embeddings
       if (config.llm.defaultProvider === 'openai' || config.llm.defaultProvider === 'anthropic') {

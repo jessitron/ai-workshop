@@ -6,6 +6,7 @@ export const config = {
   // Server Configuration
   port: process.env.PORT || 3001,
   nodeEnv: process.env.NODE_ENV || 'development',
+  logLevel: process.env.LOG_LEVEL || (process.env.NODE_ENV === 'production' ? 'info' : 'debug'),
   
   // LLM Configuration
   llm: {

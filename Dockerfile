@@ -1,18 +1,22 @@
+# syntax=docker/dockerfile:1
 # Build stage
 FROM node:18-alpine AS builder
 
 WORKDIR /app
 
-# Copy package files
+# Copy package files for root and client
 COPY package*.json ./
 COPY client/package*.json ./client/
 
-# Install dependencies
-RUN npm install --production && \
+# Install ALL dependencies (including dev deps for build) with cache mount
+RUN --mount=type=cache,target=/root/.npm \
+    npm install --production && \
     cd client && npm install --production
 
-# Copy application files
-COPY . .
+# Copy only backend, frontend, and scripts (avoid copying entire directory)
+COPY server ./server
+COPY client ./client
+COPY scripts ./scripts
 
 # Build the React frontend
 RUN cd client && npm run build
@@ -22,9 +26,12 @@ FROM node:18-alpine
 
 WORKDIR /app
 
-# Install only production dependencies
+# Copy package files
 COPY package*.json ./
-RUN npm install --production
+
+# Install ONLY production dependencies with cache mount
+RUN --mount=type=cache,target=/root/.npm \
+    npm install --production
 
 # Copy built application from builder
 COPY --from=builder /app/server ./server

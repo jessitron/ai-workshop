@@ -32,7 +32,7 @@ Internet → ALB → ECS Fargate Container → OpenSearch (Vector DB)
 
 ```bash
 cd pulumi
-npm install
+pulumi install
 ```
 
 ### 2. Configure Pulumi
@@ -72,7 +72,7 @@ pulumi up
 
 **First deployment takes ~15-20 minutes** (includes Docker build ~2-5 min + infrastructure creation ~10-15 min)
 
-See [`AUTOMATED_BUILD.md`](./AUTOMATED_BUILD.md) for details on the automated build process.
+See [`AUTOMATED_BUILD.md`](../.memory/AUTOMATED_BUILD.md) for details on the automated build process.
 
 #### Manual Build (Optional)
 
@@ -274,6 +274,22 @@ aws ecs update-service \
   --service otel-ai-chatbot-service \
   --force-new-deployment
 ```
+
+## Additional Documentation
+
+Comprehensive guides are available in the `docs/` folder:
+
+- **[AUTOMATED_BUILD.md](../.memory/AUTOMATED_BUILD.md)** - Complete guide to automated Docker builds with Pulumi
+- **[AWS_DEPLOYMENT.md](../.memory/AWS_DEPLOYMENT.md)** - Step-by-step AWS deployment guide
+- **[DEPLOYMENT_SUMMARY.md](../.memory/DEPLOYMENT_SUMMARY.md)** - Quick reference for deployment commands and outputs
+- **[ECR_DOCKER_INTEGRATION.md](../.memory/ECR_DOCKER_INTEGRATION.md)** - Detailed ECR and Docker integration documentation
+- **[OPENSEARCH_MIGRATION.md](../.memory/OPENSEARCH_MIGRATION.md)** - Guide for migrating from ChromaDB to OpenSearch
+- **[DOCKER_BUILD_CLOUD.md](../.memory/DOCKER_BUILD_CLOUD.md)** - Docker Build Cloud integration guide
+- **[DOCKER_BUILD_CLOUD_ISSUE.md](../.memory/DOCKER_BUILD_CLOUD_ISSUE.md)** - Troubleshooting Docker Build Cloud issues
+- **[QUICKSTART_DOCKER_BUILD_CLOUD.md](../.memory/QUICKSTART_DOCKER_BUILD_CLOUD.md)** - Quick start for Docker Build Cloud
+- **[WHATS_NEW.md](../.memory/WHATS_NEW.md)** - Recent changes and new features
+- **[API.md](../.memory/API.md)** - API documentation
+- **[SETUP.md](../.memory/SETUP.md)** - General setup documentation
 
 ## Next Steps
 
