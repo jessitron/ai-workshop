@@ -260,16 +260,16 @@ const secretsPolicy = new aws.iam.RolePolicy(`${appName}-secrets-policy`, {
 
 const openSearchDomain = new aws.opensearch.Domain(`${appName}-opensearch`, {
     domainName: `${appName}-${environment}`,
-    engineVersion: "OpenSearch_2.11",
+    engineVersion: "OpenSearch_3.1",
     clusterConfig: {
-        instanceType: "t3.small.search", // Use t3.small for cost optimization
-        instanceCount: 1, // Single instance for development
+        instanceType: "m8g.large.search",
+        instanceCount: 2,
         dedicatedMasterEnabled: false,
         zoneAwarenessEnabled: false,
     },
     ebsOptions: {
         ebsEnabled: true,
-        volumeSize: 10, // 10 GB storage
+        volumeSize: 100,
         volumeType: "gp3",
     },
     encryptAtRest: {

@@ -113,7 +113,7 @@ class OpenSearchVectorStore {
                   method: {
                     name: 'hnsw',
                     space_type: 'l2',
-                    engine: 'nmslib',
+                    engine: 'faiss', // Changed from nmslib (deprecated in OpenSearch 3.x) to faiss
                     parameters: {
                       ef_construction: 128,
                       m: 24,

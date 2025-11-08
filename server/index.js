@@ -12,6 +12,7 @@ import { rateLimiter, validateApiKey, requestLogger } from './middleware/auth.js
 // Import routes
 import chatRouter from './routes/chat.js';
 import adminRouter from './routes/admin.js';
+import ingestRouter from './routes/ingest.js';
 
 // Import services to initialize them
 import llmProvider from './services/llmProvider.js';
@@ -134,6 +135,7 @@ class Server {
     // API routes
     this.app.use('/api/chat', chatRouter);
     this.app.use('/api/admin', adminRouter);
+    this.app.use('/api/ingest', ingestRouter);
 
     // Health check endpoint
     this.app.get('/api/health', (req, res) => {
