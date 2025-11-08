@@ -1,7 +1,6 @@
 import { Client } from '@opensearch-project/opensearch';
 import { defaultProvider } from '@aws-sdk/credential-provider-node';
 import { AwsSigv4Signer } from '@opensearch-project/opensearch/aws';
-import { OpenAIEmbeddings } from '@langchain/openai';
 import { BedrockEmbeddings } from '@langchain/aws';
 import { RecursiveCharacterTextSplitter } from '@langchain/textsplitters';
 import { Document } from '@langchain/core/documents';
@@ -52,24 +51,15 @@ class OpenSearchVectorStore {
       await this.client.info();
       logger.info('Connected to OpenSearch');
 
-      // Initialize embeddings
-      if (config.llm.defaultProvider === 'openai' || config.llm.defaultProvider === 'anthropic') {
-        this.embeddings = new OpenAIEmbeddings({
-          openAIApiKey: config.llm.openai.apiKey,
-          modelName: 'text-embedding-ada-002',
-        });
-      } else if (config.llm.defaultProvider === 'bedrock') {
-        this.embeddings = new BedrockEmbeddings({
-          model: 'amazon.titan-embed-text-v1',
-          region: config.llm.bedrock.region,
-          credentials: {
-            accessKeyId: config.llm.bedrock.accessKeyId,
-            secretAccessKey: config.llm.bedrock.secretAccessKey,
-          },
-        });
-      } else {
-        throw new Error(`Unsupported LLM provider: ${config.llm.defaultProvider}`);
-      }
+      // Initialize embeddings - always use Bedrock with Amazon Titan
+      this.embeddings = new BedrockEmbeddings({
+        model: 'amazon.titan-embed-text-v1',
+        region: process.env.AWS_REGION || 'us-east-1',
+        // Credentials handled automatically:
+        // - ECS: Uses IAM task role
+        // - Local: Uses AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY from env
+      });
+      logger.info('Using Bedrock embeddings with Amazon Titan');
 
       // Initialize text splitter
       this.textSplitter = new RecursiveCharacterTextSplitter({
@@ -109,7 +99,7 @@ class OpenSearchVectorStore {
                 content: { type: 'text' },
                 embedding: {
                   type: 'knn_vector',
-                  dimension: 1536, // OpenAI text-embedding-ada-002 dimension
+                  dimension: 1536, // Amazon Titan Text Embeddings dimension
                   method: {
                     name: 'hnsw',
                     space_type: 'l2',

@@ -295,36 +295,40 @@ Run your React application as usual:
         title: 'About AI-Workshop project (OpenTelemetry AI Chatbot)',
         content: `
 # Project Overview
-This is an AI-powered chatbot application specifically designed to help developers with OpenTelemetry integration and instrumentation. It's a full-stack JavaScript/Node.js application that combines modern web technologies with AI capabilities.
+This is an AI-powered chatbot application specifically designed to help developers with OpenTelemetry integration and instrumentation. It's a full-stack JavaScript/Node.js application that combines modern web technologies with AWS AI services.
 
 ## Core Features
-### Multi-LLM Support
-Supports multiple AI providers: OpenAI, Anthropic Claude, and AWS Bedrock
-Allows easy switching between providers
-Implements provider-agnostic chat interface
+### AWS Bedrock Integration
+Uses AWS Bedrock exclusively for LLM capabilities
+Claude 3.5 Sonnet for intelligent responses
+Amazon Titan embeddings for vector search
+IAM role-based authentication (no hardcoded credentials in production)
 
 ## RAG (Retrieval Augmented Generation) Capabilities
-Uses ChromaDB as vector database
-Pre-loaded with OpenTelemetry documentation
+Dual vector database support:
+- Local development: ChromaDB
+- Production/AWS: Amazon OpenSearch with k-NN search
+Pre-loaded with OpenTelemetry and Honeycomb Pulumi provider documentation
 Provides contextually relevant answers based on stored knowledge
 Supports source attribution for responses
 
 ## Modern Architecture
-React-based frontend
-Express.js backend
-Real-time streaming responses
-Vector search integration
+React-based frontend served directly from backend
+Express.js backend API
+Real-time chat responses
+Vector search integration (ChromaDB or OpenSearch)
 Comprehensive API endpoints
 
 ## Technical Architecture
 
 +------------------------+
-|     React Frontend     |
-|  +------------------+ |
-|  |   Chat Interface | |
-|  |  Provider Select | |
-|  | Message Streaming| |
-|  +--------+--------+ |
+|  React Frontend        |
+|  (Built & Served)      |
+|  +------------------+  |
+|  |   Chat Interface |  |
+|  | Bedrock Info Bar |  |
+|  | Message Display  |  |
+|  +--------+---------+  |
 +-----------|-----------+
             |
             v
@@ -332,10 +336,11 @@ Comprehensive API endpoints
 |    Express Backend     |
 | +--------------------+|
 | |    API Layer       ||
+| |  Static Frontend   ||
 | |       |            ||
 | |    Auth/Rate Limit ||
 | |    /          \    ||
-| | LLM         Vector ||
+| | Bedrock     Vector ||
 | |Service      Store  ||
 | |    \          /    ||
 | |     RAG Service    ||
@@ -344,37 +349,40 @@ Comprehensive API endpoints
       |           |
       v           |
 +------------------------+
-|  External Services     |
-| +---------+  +------+ |
-| | ChromaDB|  |OpenAI| |
-| +---------+  +------+ |
-| +----------+ +------+ |
-| |  Claude  | |AWS   | |
-| |          | |Bedrock| |
-| +----------+ +------+ |
+|  AWS Services          |
+| +---------+  +-------+|
+| | Bedrock |  |OpenSea||
+| | Claude  |  |rch    ||
+| | 3.5     |  |k-NN   ||
+| | Sonnet  |  |       ||
+| +---------+  +-------+|
+| +---------+           |
+| | Titan   |           |
+| |Embedding|           |
+| +---------+           |
 +------------------------+
 
 Legend:
 → Data flow
 ↔ Bidirectional communication
 
-### Frontend
-Frontend (/client)
+### Frontend (/client)
 Modern React application
 Real-time chat interface
-Provider selection component
+Bedrock model information display (Claude 3.5 Sonnet + Amazon Titan)
 Message streaming support
 API service layer for backend communication
+Built and served as static files from backend in production
 
 #### Key Dependencies of Frontend
 The project is using modern JavaScript (ES6+) with JSX syntax
 Modern ES6+ module imports/exports
-react-router-dom (v6.20.1) for routing
 axios (v1.6.2) for HTTP requests
 react-markdown (v9.0.1) for markdown rendering
 react-syntax-highlighter (v15.5.0) for code highlighting
 react-icons (v4.12.0) for icon components
-OpenTelemetry related packages for web monitoring
+styled-components for UI styling
+OpenTelemetry packages for instrumentation support
 
 ### Backend (/server)
 Express.js server with modular architecture
@@ -382,73 +390,106 @@ Comprehensive middleware (auth, validation, rate limiting)
 Robust error handling and logging
 API routes for chat and admin functions
 Service layer for business logic
+Serves both API and static frontend
 
 #### Key Dependencies of Backend
 Node.js with Express.js framework
 Uses ES Modules (type: "module" in package.json)
 Modern JavaScript (ES6+) with async/await patterns
 Class-based architecture for server setup
-LangChain ecosystem (@langchain/core, @langchain/openai, etc.)
-ChromaDB for vector storage
+LangChain ecosystem for AI orchestration (@langchain/core, @langchain/aws)
+AWS SDK for Bedrock integration (@aws-sdk/credential-provider-node)
+ChromaDB for local vector storage OR OpenSearch for production
 Express middleware (cors, helmet, rate-limit)
 Winston for logging
-Various AI provider SDKs (OpenAI, Anthropic, AWS)
 
 ### Services
-llmProvider.js: Manages multiple AI provider integrations
-vectorStore.js: Handles ChromaDB interactions
-ragService.js: Implements RAG functionality
+llmProvider.js: Manages AWS Bedrock integration with Claude 3.5 Sonnet
+vectorStore.js: Handles ChromaDB/OpenSearch interactions with Titan embeddings
+ragService.js: Implements RAG functionality with LangChain
 Various middleware services for security and validation
 
 ### Data Management
-Uses ChromaDB for vector storage
+Local: ChromaDB for vector storage
+Production: Amazon OpenSearch with k-NN for vector search
 Includes data ingestion scripts
 Supports custom documentation ingestion
-Pre-loaded with OpenTelemetry documentation
+Pre-loaded with OpenTelemetry and Honeycomb Pulumi provider documentation
 
 ### Development Features
-Development Tools
 Hot reloading for development
-Comprehensive logging
+Comprehensive logging with Winston
 Environment-based configuration
 Debug mode support
+Quick-start script for easy setup
 
 ### Security Features
-API key validation
 Rate limiting
 CORS protection
 Helmet security headers
+IAM role-based authentication (production)
+AWS credentials from environment (local development)
 
 ### Deployment Options
-Development and production modes
-Environment variable configuration
-Static file serving for production
-Health check endpoints
+**Local Development:**
+- ChromaDB for vector storage
+- AWS credentials from environment variables
+- npm run scripts for easy management
+
+**AWS Production (Pulumi):**
+- Amazon ECS Fargate for containerized deployment
+- Application Load Balancer for traffic routing
+- Amazon OpenSearch for vector search with k-NN
+- Amazon ECR for Docker image registry
+- AWS Secrets Manager for secure credential storage
+- IAM roles for secure AWS service access
+- Automated Docker builds and deployments
+
+### Infrastructure as Code (Pulumi)
+Complete AWS infrastructure defined in TypeScript
+Automated Docker image building and pushing to ECR
+VPC with public/private subnets across 2 availability zones
+Security groups with least-privilege access
+ECS Fargate cluster with 0.5 vCPU, 1GB memory tasks
+OpenSearch domain with k-NN enabled for vector search
+CloudWatch logs with 7-day retention
+Container serves both frontend and backend API
 
 ### Getting Started
-Prerequisites
-Node.js 18+
-npm or yarn
-API keys for chosen LLM providers
-ChromaDB for vector storage
+**Prerequisites:**
+- Node.js 18+
+- npm or yarn
+- AWS credentials (for Bedrock access)
+- ChromaDB (local development) OR OpenSearch (production)
 
-### Setup Process
-all
+**Quick Start:**
+\`\`\`bash
+scripts/quick-start.sh  # One-command setup and start
+\`\`\`
 
 ### API Endpoints
-Chat API
-POST /api/chat: Send messages
-GET /api/chat/context: Get context
-GET /api/chat/providers: List providers
-POST /api/chat/test-provider: Test provider
+**Chat API:**
+- POST /api/chat: Send messages to Claude 3.5 Sonnet
+- GET /api/chat/context: Get context from vector store
+- GET /api/chat/providers: Get Bedrock model information
+- POST /api/chat/test-provider: Test Bedrock connection
+- GET /api/health: Health check endpoint
 
-### Admin API
-POST /api/admin/ingest: Add documents
-GET /api/admin/vector-store/info: Get store info
-POST /api/admin/search: Search documents
-DELETE /api/admin/vector-store: Reset store
+**Admin API:**
+- POST /api/admin/ingest: Add documents to vector store
+- GET /api/admin/vector-store/info: Get vector store statistics
+- POST /api/admin/search: Search documents
+- DELETE /api/admin/vector-store: Reset vector store
 
-## This project is particularly valuable for developers working with OpenTelemetry, as it provides an interactive way to learn about and implement OpenTelemetry instrumentation in their applications. The combination of multiple LLM providers and RAG capabilities ensures high-quality, contextually relevant responses to technical queries about OpenTelemetry implementation.
+## Production Architecture Benefits
+**Simplified Deployment:** Single container serves both frontend and backend
+**Secure:** IAM roles for AWS service access, no hardcoded credentials
+**Scalable:** ECS Fargate with auto-scaling capabilities
+**Resilient:** Multi-AZ deployment with health checks
+**Observable:** CloudWatch logs and Container Insights
+**Cost-Optimized:** Single NAT gateway, right-sized resources (~$100-105/month)
+
+## This project is particularly valuable for developers working with OpenTelemetry and Honeycomb, as it provides an interactive way to learn about OpenTelemetry instrumentation and Honeycomb infrastructure as code using Pulumi. The AWS Bedrock integration with Claude 3.5 Sonnet and Amazon Titan embeddings ensures high-quality, contextually relevant responses, while the production-ready AWS architecture demonstrates modern cloud-native application patterns.
         `,
         source: 'ai-workshop',
         metadata: {

@@ -218,22 +218,13 @@ const secretsManagerSecret = new aws.secretsmanager.Secret(`${appName}-secrets`,
     tags: tags,
 });
 
-// Note: You'll need to manually populate this secret with actual values
+// Note: Only storing OpenSearch password - Bedrock uses IAM role for authentication
 const secretVersion = new aws.secretsmanager.SecretVersion(`${appName}-secrets-version`, {
     secretId: secretsManagerSecret.id,
-    secretString: pulumi.all([
-        config.getSecret("open-ai-token"),
-        config.get("anthropic-api-key"), // Use get() instead of getSecret() since it's stored as plaintext
-        config.requireSecret("opensearchMasterPassword")
-    ]).apply(([openaiKey, anthropicKey, opensearchPassword]) => {
-        // Always include all keys to ensure ECS can pull secrets successfully
-        // Use empty string as fallback if API keys are not set
+    secretString: config.requireSecret("opensearchMasterPassword").apply(opensearchPassword => {
         const secretObj = {
-            OPENAI_API_KEY: openaiKey || "",
-            ANTHROPIC_API_KEY: anthropicKey || "",
             OPENSEARCH_PASSWORD: opensearchPassword,
         };
-
         return JSON.stringify(secretObj);
     }),
 });
@@ -327,6 +318,27 @@ const openSearchPolicy = new aws.iam.RolePolicy(`${appName}-opensearch-policy`, 
     })),
 });
 
+// Grant ECS task access to AWS Bedrock for Claude models and Titan Embeddings
+const bedrockPolicy = new aws.iam.RolePolicy(`${appName}-bedrock-policy`, {
+    role: ecsTaskRole.id,
+    policy: pulumi.interpolate`{
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Action": [
+                    "bedrock:InvokeModel",
+                    "bedrock:InvokeModelWithResponseStream"
+                ],
+                "Resource": [
+                    "arn:aws:bedrock:*::foundation-model/*",
+                    "arn:aws:bedrock:*:${aws.getCallerIdentityOutput().accountId}:inference-profile/*"
+                ]
+            }
+        ]
+    }`,
+});
+
 // =============================================================================
 // Application Load Balancer
 // =============================================================================
@@ -411,21 +423,14 @@ const taskDefinition = new aws.ecs.TaskDefinition(`${appName}-task`, {
             {name: "PORT", value: "3001"},
             {name: "NODE_ENV", value: nodeEnv},
             {name: "LOG_LEVEL", value: "debug"}, // Set to "debug" for verbose logging, "info" for production
-            {name: "DEFAULT_LLM_PROVIDER", value: "openai"},
+            {name: "DEFAULT_LLM_PROVIDER", value: "bedrock"},
+            {name: "BEDROCK_MODEL", value: "anthropic.claude-3-5-sonnet-20240620-v1:0"},
             {name: "OPENSEARCH_ENDPOINT", value: `https://${opensearchEndpoint}`},
             {name: "OPENSEARCH_INDEX", value: "otel_knowledge"},
             {name: "OPENSEARCH_USERNAME", value: "admin"},
             {name: "AWS_REGION", value: awsRegion},
         ],
         secrets: [
-            {
-                name: "OPENAI_API_KEY",
-                valueFrom: `${secretArn}:OPENAI_API_KEY::`,
-            },
-            {
-                name: "ANTHROPIC_API_KEY",
-                valueFrom: `${secretArn}:ANTHROPIC_API_KEY::`,
-            },
             {
                 name: "OPENSEARCH_PASSWORD",
                 valueFrom: `${secretArn}:OPENSEARCH_PASSWORD::`,
