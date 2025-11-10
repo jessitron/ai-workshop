@@ -9,34 +9,13 @@ An intelligent chatbot application designed to help developers with OpenTelemetr
 - **OpenTelemetry Expertise**: Pre-loaded with comprehensive OpenTelemetry documentation
 - **Modern Web Interface**: Clean, responsive React-based chat interface
 - **Source Attribution**: Shows which documents were used to generate responses with relevance scores
-- **Dual Deployment**: ChromaDB for local development, OpenSearch for production on AWS
+- **Cloud-Native Architecture**: Amazon OpenSearch Service for vector storage with k-NN search
 - **Automated Infrastructure**: Pulumi-managed AWS deployment with automated Docker builds
 - **Secure Configuration**: Pulumi ESC for secrets and configuration management
 
 ## 🏗️ Architecture
 
-### Local Development Architecture
-```
-┌─────────────────┐    ┌─────────────────┐    ┌──────────────────┐
-│   React Client  │────│  Express API    │────│   AWS Bedrock    │
-│   (Port 3000)   │    │   (Port 3001)   │    │ Claude 3.5 Sonnet│
-│                 │    │                 │    └──────────────────┘
-│  - Chat UI      │    │  - Chat Routes  │
-│  - Message      │    │  - Admin Routes │
-│    Display      │    │  - RAG Service  │
-└─────────────────┘    └─────────────────┘
-                                │
-                       ┌────────────────────┐
-                       │   ChromaDB         │
-                       │   (Port 8000)      │
-                       │                    │
-                       │  - OTel Docs       │
-                       │  - Vector Search   │
-                       │  - k=4 retrieval   │
-                       └────────────────────┘
-```
-
-### AWS Production Architecture
+### AWS Cloud Architecture
 ```
 ┌──────────────┐    ┌─────────────────┐    ┌──────────────────┐
 │   Internet   │────│   ALB (Port 80) │────│  ECS Fargate     │
@@ -72,88 +51,60 @@ An intelligent chatbot application designed to help developers with OpenTelemetr
 
 ### Prerequisites
 
-- Node.js 18+
-- npm or yarn
-- Python 3.8+ (for ChromaDB)
-- AWS credentials with Bedrock access
-- Pulumi CLI installed (for deployment)
+- Pulumi CLI installed
 - Pulumi ESC environment configured with AWS credentials
+- Docker installed (for automated container builds)
+- AWS account with Bedrock access enabled
+- Node.js 18+ (for running Pulumi TypeScript)
 
-### Local Development Setup
+### AWS Deployment
 
-#### Option 1: Quick Start Script (Recommended)
-
-```bash
-# Clone the repository
-git clone <repository-url>
-cd ai-workshop
-
-# Run quick start script (handles everything)
-scripts/quick-start.sh
-```
-
-The quick start script automatically:
-- Checks and installs all required dependencies
-- Sets up ChromaDB
-- Ingests OpenTelemetry documentation
-- Starts the application (client, server, and ChromaDB)
-
-**Note**: First-time ChromaDB startup may timeout. Simply re-run the script if this occurs.
-
-#### Option 2: Manual Setup
-
-1. **Install dependencies**
+1. **Clone the repository**
    ```bash
-   npm run install-all
-   # Or manually:
-   npm install && cd client && npm install && cd ..
+   git clone <repository-url>
+   cd ai-workshop/pulumi
    ```
 
-2. **Configure AWS credentials using Pulumi ESC**
-
-   This project uses Pulumi ESC for all secrets and configuration. To connect to AWS:
+2. **Install Pulumi dependencies**
    ```bash
-   # Run any AWS CLI command through Pulumi ESC
-   pulumi env run <esc-environment> -i -- <command>
-
-   # Example: Check AWS identity
-   pulumi env run honeycomb-pulumi-workshop/ws -i -- aws sts get-caller-identity
+   npm install
    ```
 
-   The ESC environment is specified in `Pulumi.<stack>.yaml` file.
-
-3. **Set up ChromaDB**
+3. **Initialize stack** (if needed)
    ```bash
-   pip install chromadb
-   npm run start:chroma
-   # ChromaDB runs on localhost:8000
+   pulumi stack init dev
+   pulumi config set aws:region us-east-1
    ```
 
-4. **Ingest OpenTelemetry documentation**
+4. **Set OpenSearch master password**
    ```bash
-   npm run setup-data
+   pulumi config set --secret opensearchMasterPassword <strong-password>
    ```
 
-5. **Start the application**
+5. **Deploy infrastructure** (automatically builds and pushes Docker image)
    ```bash
-   # Start everything (recommended)
-   npm run start:all
-
-   # Or start components individually
-   npm run dev              # Server only (port 3001)
-   npm run start:client     # Client only (port 3000)
-   npm run start:chroma     # ChromaDB only (port 8000)
+   pulumi env run <esc-environment> -i -- pulumi up
    ```
 
-6. **Access the application**
-   - Frontend: http://localhost:3000
-   - API: http://localhost:3001/api
-   - Health check: http://localhost:3001/api/health
+   **First deployment takes ~15-20 minutes** due to Docker build and OpenSearch domain creation.
 
-7. **Stop the application**
+6. **Ingest OpenTelemetry documentation to OpenSearch**
    ```bash
-   npm run stop:all
+   cd ..
+   export USE_OPENSEARCH=true
+   export OPENSEARCH_ENDPOINT=$(cd pulumi && pulumi stack output opensearchEndpoint)
+   export OPENSEARCH_USERNAME=admin
+   export OPENSEARCH_PASSWORD=<your-opensearch-password>
+
+   pulumi env run <esc-environment> -i -- node scripts/ingest-data.js
    ```
+
+7. **Access the application**
+   ```bash
+   pulumi stack output albUrl
+   ```
+
+   Visit the URL to start chatting with the OpenTelemetry AI assistant!
 ## 📖 Usage
 
 ### Chat Interface
@@ -170,10 +121,16 @@ The chatbot uses RAG to retrieve relevant documentation and provides responses w
 
 ### API Endpoints
 
+Get your application URL:
+```bash
+cd pulumi
+pulumi stack output albUrl
+```
+
 #### Chat API
 - `POST /api/chat` - Send a chat message (uses AWS Bedrock)
   ```bash
-  curl -X POST http://localhost:3001/api/chat \
+  curl -X POST http://<your-alb-url>/api/chat \
     -H "Content-Type: application/json" \
     -d '{"message": "How do I instrument Express.js?"}'
   ```
@@ -181,11 +138,12 @@ The chatbot uses RAG to retrieve relevant documentation and provides responses w
 - `GET /api/chat/context` - Retrieve context without generating response
 - `GET /api/chat/providers` - List available providers (returns `['bedrock']`)
 - `POST /api/chat/test-provider` - Test Bedrock provider connection
+- `GET /api/health` - Health check endpoint
 
 #### Admin API
 - `POST /api/admin/ingest` - Add documents to knowledge base
   ```bash
-  curl -X POST http://localhost:3001/api/admin/ingest \
+  curl -X POST http://<your-alb-url>/api/admin/ingest \
     -H "Content-Type: application/json" \
     -d '{
       "title": "Custom OTel Guide",
@@ -194,7 +152,7 @@ The chatbot uses RAG to retrieve relevant documentation and provides responses w
     }'
   ```
 
-- `GET /api/admin/vector-store/info` - Get vector store statistics
+- `GET /api/admin/vector-store/info` - Get OpenSearch statistics
 - `POST /api/admin/search` - Search documents directly
 - `DELETE /api/admin/vector-store` - Reset knowledge base (use with caution)
 
@@ -229,25 +187,18 @@ The ESC environment name is specified in your `Pulumi.<stack>.yaml` file.
 |----------|-------------|---------|
 | `AWS_REGION` | AWS region for Bedrock | us-east-1 |
 | `BEDROCK_MODEL` | Bedrock model ID | anthropic.claude-3-5-sonnet-20240620-v1:0 |
-| `AWS_ACCESS_KEY_ID` | AWS access key (local dev) | From Pulumi ESC |
-| `AWS_SECRET_ACCESS_KEY` | AWS secret key (local dev) | From Pulumi ESC |
-| `AWS_SESSION_TOKEN` | AWS session token (optional) | From Pulumi ESC |
+
+In production, AWS credentials are provided automatically via IAM role (no keys needed).
 
 #### Application Configuration
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `PORT` | Server port | 3001 |
-| `NODE_ENV` | Environment | development |
+| `NODE_ENV` | Environment | production |
 | `TEMPERATURE` | LLM temperature | 0.7 |
 | `MAX_TOKENS` | Max response tokens | 2000 |
 
-#### Vector Store Configuration (Local)
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `CHROMA_URL` | ChromaDB URL | http://localhost:8000 |
-| `CHROMA_COLLECTION_NAME` | Collection name | otel_knowledge |
-
-#### Vector Store Configuration (AWS Production)
+#### Vector Store Configuration (OpenSearch)
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `OPENSEARCH_ENDPOINT` | OpenSearch HTTPS endpoint | From Pulumi output |
@@ -260,7 +211,7 @@ The ESC environment name is specified in your `Pulumi.<stack>.yaml` file.
 Add your own documentation to the knowledge base via the admin API:
 
 ```bash
-curl -X POST http://localhost:3001/api/admin/ingest \
+curl -X POST http://<your-alb-url>/api/admin/ingest \
   -H "Content-Type: application/json" \
   -d '{
     "title": "Custom OTel Guide",
@@ -291,8 +242,7 @@ ai-workshop/
 │   │   └── admin.js         # Admin/knowledge base management
 │   ├── services/            # Business logic services
 │   │   ├── llmProvider.js  # AWS Bedrock integration
-│   │   ├── vectorStore.js  # ChromaDB integration (local)
-│   │   ├── vectorStoreOpenSearch.js  # OpenSearch integration (AWS)
+│   │   ├── vectorStore.js  # OpenSearch integration
 │   │   └── ragService.js   # RAG pipeline orchestration
 │   └── index.js            # Server entry point
 ├── client/                 # React frontend application
@@ -307,9 +257,7 @@ ai-workshop/
 │   ├── AUTOMATED_BUILD.md # Docker build automation guide
 │   └── README.md         # Deployment guide
 ├── scripts/              # Utility scripts
-│   ├── quick-start.sh   # One-command setup
 │   └── ingest-data.js   # Data ingestion for OTel docs
-├── data/                # ChromaDB persistence directory
 ├── docs/                # Documentation
 │   ├── AWS_DEPLOYMENT.md
 │   └── OPENSEARCH_MIGRATION.md
@@ -329,30 +277,20 @@ The server follows a strict initialization sequence (server/index.js:36-59):
 
 #### RAG Pipeline (LangChain RunnableSequence)
 The RAG service uses a three-stage pipeline:
-1. **Vector Search**: Query ChromaDB/OpenSearch for relevant documents
+1. **Vector Search**: Query OpenSearch for relevant documents using k-NN search
 2. **Context Formatting**: Format results with source and relevance score
 3. **LLM Generation**: Send prompt + context to Bedrock → parse response
 
 #### AWS Bedrock Integration
 - Fixed to use Claude 3.5 Sonnet exclusively (anthropic.claude-3-5-sonnet-20240620-v1:0)
-- Local development: AWS credentials from Pulumi ESC
-- ECS/Production: IAM role credentials (automatic)
+- Production: IAM role credentials (automatic, no keys needed)
+- Uses Bedrock embeddings for vector search (1536 dimensions)
 
-### Running Tests
-
-```bash
-npm test
-```
-
-### Building for Production
-
-```bash
-# Build the React client
-npm run build
-
-# Start in production mode
-NODE_ENV=production npm start
-```
+#### OpenSearch Vector Store
+- Amazon OpenSearch Service with k-NN enabled
+- HNSW algorithm for efficient similarity search
+- Bulk indexing support for documentation ingestion
+- Private subnet deployment for security
 
 ## ☁️ AWS Deployment with Pulumi
 
@@ -362,37 +300,11 @@ The `pulumi/` directory contains complete infrastructure-as-code for deploying t
 
 - **Automated Docker Builds**: Pulumi builds and pushes Docker images automatically to ECR
 - **Single Container Architecture**: Both React frontend and Express API in one container
-- **OpenSearch Vector Store**: Replaces ChromaDB with Amazon OpenSearch Service (k-NN enabled)
+- **OpenSearch Vector Store**: Amazon OpenSearch Service with k-NN enabled for vector search
 - **ECS Fargate**: Serverless container orchestration
 - **Application Load Balancer**: Serves both frontend (on `/`) and backend API (on `/api/*`)
 - **Pulumi ESC Integration**: All secrets and AWS credentials managed through ESC
 - **IAM Role Authentication**: No hardcoded credentials in production
-
-### Quick Deployment
-
-```bash
-cd pulumi
-
-# Install Pulumi dependencies
-npm install
-
-# Initialize stack (if needed)
-pulumi stack init dev
-
-# Configure AWS region
-pulumi config set aws:region us-east-1
-
-# Set OpenSearch master password (stored securely)
-pulumi config set --secret opensearchMasterPassword <strong-password>
-
-# Deploy everything (builds Docker image automatically)
-pulumi up
-
-# Get the application URL
-pulumi stack output albUrl
-```
-
-**First deployment takes ~15-20 minutes** due to Docker build and OpenSearch domain creation.
 
 ### Infrastructure Components
 
@@ -488,42 +400,10 @@ For detailed deployment instructions, see:
 - `pulumi/README.md` - Comprehensive deployment guide
 - `pulumi/AUTOMATED_BUILD.md` - Docker build automation details
 - `docs/AWS_DEPLOYMENT.md` - Step-by-step deployment walkthrough
-- `docs/OPENSEARCH_MIGRATION.md` - ChromaDB to OpenSearch migration guide
 
 ## 🛠️ Troubleshooting
 
 ### Common Issues
-
-#### Local Development
-
-1. **AWS Bedrock authentication errors**
-   - Ensure you're using Pulumi ESC to inject credentials:
-     ```bash
-     pulumi env run <esc-environment> -i -- npm run dev
-     ```
-   - Verify your AWS credentials have Bedrock access
-   - Check that `AWS_REGION` is set correctly (default: us-east-1)
-   - Test with: `pulumi env run <esc-environment> -i -- aws bedrock list-foundation-models`
-
-2. **ChromaDB connection issues**
-   - Ensure ChromaDB is running: `curl http://localhost:8000/api/v1/heartbeat`
-   - Start ChromaDB: `npm run start:chroma` or `chroma run --host localhost --port 8000`
-   - Check collection exists: View server logs for "Vector store initialized"
-   - Reset if needed: `DELETE http://localhost:3001/api/admin/vector-store`
-   - First-time ChromaDB timeout: Re-run `scripts/quick-start.sh`
-
-3. **Frontend can't reach API**
-   - Verify proxy configuration in `client/package.json` (should proxy to `http://localhost:3001`)
-   - Check backend is running on port 3001
-   - Look for CORS issues in browser console
-   - Verify `CODESPACE_NAME` env var if using GitHub Codespaces
-
-4. **Missing dependencies**
-   - Run `npm run install-all` to install both server and client dependencies
-   - Check Node.js version (requires 18+)
-   - Check Python version for ChromaDB (requires 3.8+)
-
-#### AWS Production Deployment
 
 1. **Pulumi deployment fails**
    - Check Pulumi ESC environment is accessible:
@@ -559,27 +439,18 @@ For detailed deployment instructions, see:
    - Check CloudWatch logs for application errors
    - Verify Bedrock model access in your AWS region
 
-### Debug Mode
-
-Enable debug logging:
-```bash
-# Local development
-NODE_ENV=development npm run dev
-
-# With Pulumi ESC credentials
-pulumi env run <esc-environment> -i -- NODE_ENV=development npm run dev
-
-# Check specific components
-curl http://localhost:3001/api/health              # Health check
-curl http://localhost:3001/api/chat/providers      # Available providers
-curl http://localhost:8000/api/v1/heartbeat        # ChromaDB status
-```
-
 ### Useful Diagnostic Commands
 
 ```bash
 # Check Pulumi ESC environment
 pulumi env run <esc-environment> -i -- env | grep AWS
+
+# Get application URL
+cd pulumi && pulumi stack output albUrl
+
+# Check application health
+curl http://<alb-url>/api/health
+curl http://<alb-url>/api/chat/providers
 
 # View ECS task logs
 pulumi env run <esc-environment> -i -- aws logs tail \
@@ -588,15 +459,19 @@ pulumi env run <esc-environment> -i -- aws logs tail \
 # Check OpenSearch cluster health
 curl -u admin:<password> https://<opensearch-endpoint>/_cluster/health
 
-# List vector store collections
-curl http://localhost:8000/api/v1/collections      # ChromaDB
-curl http://localhost:3001/api/admin/vector-store/info  # Via API
+# Get OpenSearch statistics via API
+curl http://<alb-url>/api/admin/vector-store/info
 
 # Test Bedrock access
 pulumi env run <esc-environment> -i -- aws bedrock-runtime invoke-model \
   --model-id anthropic.claude-3-5-sonnet-20240620-v1:0 \
   --body '{"anthropic_version":"bedrock-2023-05-31","messages":[{"role":"user","content":"Hello"}],"max_tokens":100}' \
   output.json
+
+# Check ECS service status
+pulumi env run <esc-environment> -i -- aws ecs describe-services \
+  --cluster $(cd pulumi && pulumi stack output ecsClusterName) \
+  --services $(cd pulumi && pulumi stack output ecsServiceName)
 ```
 
 ## 🤝 Contributing
@@ -618,7 +493,8 @@ pulumi env run <esc-environment> -i -- aws bedrock-runtime invoke-model \
 - Use Winston logger for all logging
 - Add JSDoc comments for new functions
 - Update CLAUDE.md for architectural changes
-- Test locally before deploying to AWS
+- Test changes in a dev/staging stack before production
+- Use Pulumi preview to review infrastructure changes
 
 ## 📄 License
 
@@ -630,7 +506,7 @@ MIT License - see LICENSE file for details
 - **AWS Bedrock** for providing Claude 3.5 Sonnet API access
 - **LangChain** for the excellent RAG framework and LLM orchestration
 - **Pulumi** for infrastructure-as-code and secrets management (ESC)
-- **ChromaDB** and **OpenSearch** for vector database capabilities
+- **Amazon OpenSearch** for vector database with k-NN search capabilities
 
 ## 📚 Additional Resources
 
@@ -639,8 +515,8 @@ MIT License - see LICENSE file for details
 - [LangChain Documentation](https://js.langchain.com/docs/)
 - [Pulumi Documentation](https://www.pulumi.com/docs/)
 - [Pulumi ESC Documentation](https://www.pulumi.com/docs/pulumi-cloud/esc/)
-- [ChromaDB Documentation](https://docs.trychroma.com/)
 - [Amazon OpenSearch Documentation](https://docs.aws.amazon.com/opensearch-service/)
+- [Amazon ECS Documentation](https://docs.aws.amazon.com/ecs/)
 
 ## 🆘 Support
 
@@ -650,4 +526,4 @@ MIT License - see LICENSE file for details
 
 ---
 
-**Ready to get started?** Run `scripts/quick-start.sh` and ask the chatbot about OpenTelemetry! 🚀
+**Ready to get started?** Deploy to AWS with `pulumi up` and ask the chatbot about OpenTelemetry! 🚀

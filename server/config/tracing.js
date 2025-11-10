@@ -6,7 +6,8 @@ import { WinstonInstrumentation } from '@opentelemetry/instrumentation-winston';
 import { resourceFromAttributes } from '@opentelemetry/resources';
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic-conventions';
 import { ATTR_DEPLOYMENT_ENVIRONMENT_NAME } from '@opentelemetry/semantic-conventions/incubating';
-import logger from './logger.js';
+import { diag, DiagConsoleLogger, DiagLogLevel } from '@opentelemetry/api';
+// Note: DO NOT import logger here - Winston must be imported AFTER instrumentation is set up
 
 /**
  * Initialize OpenTelemetry tracing and logging with Honeycomb
@@ -25,6 +26,10 @@ import logger from './logger.js';
  */
 export function initializeTracing() {
   try {
+    // Enable OpenTelemetry diagnostic logging for debugging
+    // Set to DEBUG to see detailed information about what's being exported
+    diag.setLogger(new DiagConsoleLogger(), DiagLogLevel.DEBUG);
+
     const serviceName = process.env.OTEL_SERVICE_NAME || 'otel-ai-chatbot';
     const serviceVersion = process.env.npm_package_version || '1.0.0';
     const environment = process.env.NODE_ENV || 'development';
@@ -36,13 +41,20 @@ export function initializeTracing() {
 
     // Skip initialization if no configuration is provided
     if (!otlpEndpoint && !honeycombApiKey) {
-      logger.warn('No OTLP endpoint or Honeycomb API key configured - tracing disabled');
+      console.warn('[OpenTelemetry] No OTLP endpoint or Honeycomb API key configured - tracing disabled');
       return null;
     }
 
     // Initialize OTLP exporters (read from environment variables)
     const traceExporter = new OTLPTraceExporter();
     const logExporter = new OTLPLogExporter();
+
+    // Debug: Log the exporter configuration
+    console.log('[OpenTelemetry] 🔍 Exporter Configuration:');
+    console.log(`[OpenTelemetry]   OTLP Endpoint: ${otlpEndpoint}`);
+    console.log(`[OpenTelemetry]   OTLP Protocol: ${process.env.OTEL_EXPORTER_OTLP_PROTOCOL}`);
+    console.log(`[OpenTelemetry]   Headers configured: ${otlpHeaders ? 'Yes' : 'No'}`);
+    console.log(`[OpenTelemetry]   Honeycomb Dataset: ${process.env.HONEYCOMB_DATASET || 'not set'}`);
 
     // Initialize OpenTelemetry SDK with auto-instrumentations
     const sdk = new NodeSDK({
@@ -55,7 +67,7 @@ export function initializeTracing() {
       }),
       traceExporter: traceExporter,
       // Wrap log exporter in BatchLogRecordProcessor for proper export
-      logRecordProcessor: new logs.BatchLogRecordProcessor(logExporter),
+      logRecordProcessors: [new logs.BatchLogRecordProcessor(logExporter)],
       instrumentations: [
         getNodeAutoInstrumentations({
           // Disable fs instrumentation (can be noisy)
@@ -76,19 +88,19 @@ export function initializeTracing() {
 
     sdk.start();
 
-    logger.info('✨ OpenTelemetry tracing and logging initialized');
-    logger.info(`📊 Service: ${serviceName}`);
-    logger.info(`🌍 Environment: ${environment}`);
-    logger.info(`🔗 Endpoint: ${otlpEndpoint || 'default'}`);
-    logger.info('📝 Logs will be sent to both CloudWatch and Honeycomb');
+    console.log('[OpenTelemetry] ✨ Tracing and logging initialized');
+    console.log(`[OpenTelemetry] 📊 Service: ${serviceName}`);
+    console.log(`[OpenTelemetry] 🌍 Environment: ${environment}`);
+    console.log(`[OpenTelemetry] 🔗 Endpoint: ${otlpEndpoint || 'default'}`);
+    console.log('[OpenTelemetry] 📝 Logs will be sent to both CloudWatch and Honeycomb');
 
     // Graceful shutdown
     process.on('SIGTERM', async () => {
       try {
         await sdk.shutdown();
-        logger.info('Tracing terminated');
+        console.log('[OpenTelemetry] Tracing terminated');
       } catch (error) {
-        logger.error('Error terminating tracing', error);
+        console.error('[OpenTelemetry] Error terminating tracing:', error);
       } finally {
         process.exit(0);
       }
@@ -97,7 +109,7 @@ export function initializeTracing() {
     return sdk;
 
   } catch (error) {
-    logger.error('Failed to initialize OpenTelemetry tracing:', error);
+    console.error('[OpenTelemetry] Failed to initialize tracing:', error);
     // Don't fail the application if tracing fails
     return null;
   }
