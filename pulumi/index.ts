@@ -218,12 +218,17 @@ const secretsManagerSecret = new aws.secretsmanager.Secret(`${appName}-secrets`,
     tags: tags,
 });
 
-// Note: Only storing OpenSearch password - Bedrock uses IAM role for authentication
+// Note: OpenSearch password and Honeycomb API key - Bedrock uses IAM role for authentication
 const secretVersion = new aws.secretsmanager.SecretVersion(`${appName}-secrets-version`, {
     secretId: secretsManagerSecret.id,
-    secretString: config.requireSecret("opensearchMasterPassword").apply(opensearchPassword => {
+    secretString: pulumi.all([
+        config.requireSecret("opensearchMasterPassword"),
+        config.requireSecret("honeycombApiKey"),
+    ]).apply(([opensearchPassword, honeycombApiKey]) => {
         const secretObj = {
             OPENSEARCH_PASSWORD: opensearchPassword,
+            HONEYCOMB_API_KEY: honeycombApiKey,
+            OTEL_EXPORTER_OTLP_HEADERS: `x-honeycomb-team=${honeycombApiKey}`,
         };
         return JSON.stringify(secretObj);
     }),
@@ -429,11 +434,24 @@ const taskDefinition = new aws.ecs.TaskDefinition(`${appName}-task`, {
             {name: "OPENSEARCH_INDEX", value: "otel_knowledge"},
             {name: "OPENSEARCH_USERNAME", value: "admin"},
             {name: "AWS_REGION", value: awsRegion},
+            // Honeycomb Observability Configuration
+            {name: "HONEYCOMB_DATASET", value: `${appName}-${environment}`},
+            {name: "OTEL_SERVICE_NAME", value: `${appName}-backend`},
+            {name: "OTEL_EXPORTER_OTLP_ENDPOINT", value: "https://api.honeycomb.io"},
+            {name: "OTEL_EXPORTER_OTLP_PROTOCOL", value: "http/protobuf"},
         ],
         secrets: [
             {
                 name: "OPENSEARCH_PASSWORD",
                 valueFrom: `${secretArn}:OPENSEARCH_PASSWORD::`,
+            },
+            {
+                name: "HONEYCOMB_API_KEY",
+                valueFrom: `${secretArn}:HONEYCOMB_API_KEY::`,
+            },
+            {
+                name: "OTEL_EXPORTER_OTLP_HEADERS",
+                valueFrom: `${secretArn}:OTEL_EXPORTER_OTLP_HEADERS::`,
             },
         ],
         logConfiguration: {

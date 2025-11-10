@@ -1,3 +1,6 @@
+// IMPORTANT: Import instrumentation FIRST before any other imports
+import './instrumentation.js';
+
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
