@@ -1,7 +1,7 @@
 import * as pulumi from "@pulumi/pulumi";
 import * as aws from "@pulumi/aws";
 import * as awsx from "@pulumi/awsx";
-import * as docker from "@pulumi/docker";
+import * as dockerBuild from "@pulumi/docker-build";
 
 // Configuration
 const config = new pulumi.Config();
@@ -62,22 +62,24 @@ const authToken = aws.ecr.getAuthorizationTokenOutput({
 });
 
 // Build and push Docker image
-const image = new docker.Image(`${appName}-image`, {
-    imageName: pulumi.interpolate`${ecrRepository.repositoryUrl}:${environment}`,
-    build: {
-        context: "../", // Build from the parent directory (project root)
-        dockerfile: "../Dockerfile",
-        platform: "linux/amd64", // Build for x86_64 architecture
-        args: {
-            NODE_ENV: "production",
-        },
+const image = new dockerBuild.Image(`${appName}-image`, {
+    tags: [pulumi.interpolate`${ecrRepository.repositoryUrl}:${environment}`],
+    push: true,
+    context: {
+        location: "../",
     },
-    //skipPush: true,
-    registry: {
-        server: ecrRepository.repositoryUrl,
+    dockerfile: {
+        location: "../Dockerfile",
+    },
+    platforms: ["linux/arm64"],
+    buildArgs: {
+        NODE_ENV: "production",
+    },
+    registries: [{
+        address: ecrRepository.repositoryUrl,
         username: authToken.userName,
         password: authToken.password,
-    },
+    }],
 }, {dependsOn: [ecrRepository]});
 
 // =============================================================================
@@ -254,6 +256,10 @@ const secretsPolicy = new aws.iam.RolePolicy(`${appName}-secrets-policy`, {
 // OpenSearch Domain
 // =============================================================================
 
+const opensearchSlr = new aws.iam.ServiceLinkedRole("opensearch-service-linked-role", {
+    awsServiceName: "es.amazonaws.com"
+});
+
 const openSearchDomain = new aws.opensearch.Domain(`${appName}-opensearch`, {
     domainName: `${appName}-${environment}`,
     engineVersion: "OpenSearch_3.1",
@@ -408,13 +414,17 @@ const taskDefinition = new aws.ecs.TaskDefinition(`${appName}-task`, {
     memory: "1024",
     networkMode: "awsvpc",
     requiresCompatibilities: ["FARGATE"],
+    runtimePlatform: {
+        cpuArchitecture: "ARM64",
+        operatingSystemFamily: "LINUX",
+    },
     executionRoleArn: ecsTaskExecutionRole.arn,
     taskRoleArn: ecsTaskRole.arn,
     containerDefinitions: pulumi.all([
         logGroup.name,
         openSearchDomain.endpoint,
         secretsManagerSecret.arn,
-        image.repoDigest,
+        image.ref,
         aws.getRegionOutput().name,
     ]).apply(([logGroupName, opensearchEndpoint, secretArn, imageDigest, awsRegion]) => JSON.stringify([{
         name: "app",
@@ -493,7 +503,7 @@ const service = new aws.ecs.Service(`${appName}-service`, {
 // Container Registry
 export const ecrRepositoryUrl = ecrRepository.repositoryUrl;
 export const ecrRepositoryName = ecrRepository.name;
-export const containerImageDigest = image.repoDigest;
+export const containerImageDigest = image.ref;
 
 
 
@@ -509,4 +519,3 @@ export const secretsManagerSecretArn = secretsManagerSecret.arn;
 // Useful commands (optional - automated builds handle Docker)
 export const ecrLoginCommand = pulumi.interpolate`aws ecr get-login-password --region ${aws.getRegionOutput().name} | docker login --username AWS --password-stdin ${ecrRepository.repositoryUrl}`;
 export const dockerBuildCommand = pulumi.interpolate`docker build -t ${ecrRepository.repositoryUrl}:latest ../ && docker push ${ecrRepository.repositoryUrl}:latest`;
-
