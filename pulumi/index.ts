@@ -96,6 +96,68 @@ const vpc = new awsx.ec2.Vpc(`${appName}-vpc`, {
 });
 
 // =============================================================================
+// VPC Endpoints
+// =============================================================================
+
+// VPC Endpoint Security Group
+const vpcEndpointSecurityGroup = new aws.ec2.SecurityGroup(`${appName}-vpce-sg`, {
+    vpcId: vpc.vpcId,
+    description: "Security group for VPC Endpoints",
+    ingress: [
+        {
+            protocol: "tcp",
+            fromPort: 443,
+            toPort: 443,
+            cidrBlocks: [vpc.vpc.cidrBlock],
+            description: "Allow HTTPS from VPC",
+        },
+    ],
+    egress: [
+        {
+            protocol: "-1",
+            fromPort: 0,
+            toPort: 0,
+            cidrBlocks: ["0.0.0.0/0"],
+            description: "Allow all outbound traffic",
+        },
+    ],
+    tags: {...tags, Name: `${appName}-vpce-sg`},
+});
+
+// Bedrock VPC Endpoint
+const bedrockVpcEndpoint = new aws.ec2.VpcEndpoint(`${appName}-bedrock-vpce`, {
+    vpcId: vpc.vpcId,
+    serviceName: pulumi.interpolate`com.amazonaws.${aws.getRegionOutput().name}.bedrock-runtime`,
+    vpcEndpointType: "Interface",
+    subnetIds: vpc.privateSubnetIds,
+    securityGroupIds: [vpcEndpointSecurityGroup.id],
+    privateDnsEnabled: true,
+    tags: {...tags, Name: `${appName}-bedrock-vpce`},
+});
+
+// Secrets Manager VPC Endpoint
+const secretsManagerVpcEndpoint = new aws.ec2.VpcEndpoint(`${appName}-secretsmanager-vpce`, {
+    vpcId: vpc.vpcId,
+    serviceName: pulumi.interpolate`com.amazonaws.${aws.getRegionOutput().name}.secretsmanager`,
+    vpcEndpointType: "Interface",
+    subnetIds: vpc.privateSubnetIds,
+    securityGroupIds: [vpcEndpointSecurityGroup.id],
+    privateDnsEnabled: true,
+    tags: {...tags, Name: `${appName}-secretsmanager-vpce`},
+});
+
+// CloudWatch Logs VPC Endpoint
+const logsVpcEndpoint = new aws.ec2.VpcEndpoint(`${appName}-logs-vpce`, {
+    vpcId: vpc.vpcId,
+    serviceName: pulumi.interpolate`com.amazonaws.${aws.getRegionOutput().name}.logs`,
+    vpcEndpointType: "Interface",
+    subnetIds: vpc.privateSubnetIds,
+    securityGroupIds: [vpcEndpointSecurityGroup.id],
+    privateDnsEnabled: true,
+    tags: {...tags, Name: `${appName}-logs-vpce`},
+});
+
+// =============================================================================
 // Security Groups
 // =============================================================================
 
@@ -370,6 +432,7 @@ const alb = new aws.lb.LoadBalancer(`${appName}-alb`, {
     loadBalancerType: "application",
     subnets: vpc.publicSubnetIds,
     securityGroups: [albSecurityGroup.id],
+    idleTimeout: 120,
     tags: tags,
 });
 
@@ -378,12 +441,13 @@ const targetGroup = new aws.lb.TargetGroup(`${appName}-tg`, {
     protocol: "HTTP",
     targetType: "ip",
     vpcId: vpc.vpcId,
+    deregistrationDelay: 30,
     healthCheck: {
         enabled: true,
         path: "/api/health",
         healthyThreshold: 2,
-        unhealthyThreshold: 3,
-        timeout: 5,
+        unhealthyThreshold: 2,
+        timeout: 10,
         interval: 30,
         matcher: "200",
     },
@@ -422,8 +486,8 @@ const logGroup = new aws.cloudwatch.LogGroup(`${appName}-logs`, {
 // ECS Task Definition
 const taskDefinition = new aws.ecs.TaskDefinition(`${appName}-task`, {
     family: `${appName}-app`,
-    cpu: "512",
-    memory: "1024",
+    cpu: "2048",
+    memory: "4096",
     networkMode: "awsvpc",
     requiresCompatibilities: ["FARGATE"],
     runtimePlatform: {
@@ -456,6 +520,8 @@ const taskDefinition = new aws.ecs.TaskDefinition(`${appName}-task`, {
             {name: "OPENSEARCH_INDEX", value: "otel_knowledge"},
             {name: "OPENSEARCH_USERNAME", value: "admin"},
             {name: "AWS_REGION", value: awsRegion},
+            // Node.js Memory Optimization - allocate 3GB heap for 4GB container
+            {name: "NODE_OPTIONS", value: "--max-old-space-size=3072"},
             // Honeycomb Observability Configuration
             {name: "HONEYCOMB_DATASET", value: `${appName}-${environment}`},
             {name: "OTEL_SERVICE_NAME", value: `${appName}-backend`},
@@ -494,7 +560,7 @@ const taskDefinition = new aws.ecs.TaskDefinition(`${appName}-task`, {
 const service = new aws.ecs.Service(`${appName}-service`, {
     cluster: cluster.arn,
     taskDefinition: taskDefinition.arn,
-    desiredCount: 1,
+    desiredCount: 2,
     launchType: "FARGATE",
     networkConfiguration: {
         subnets: vpc.privateSubnetIds,
@@ -508,6 +574,51 @@ const service = new aws.ecs.Service(`${appName}-service`, {
     }],
     tags: tags,
 }, {dependsOn: [listener]});
+
+// =============================================================================
+// ECS Auto Scaling
+// =============================================================================
+
+// Auto Scaling Target
+const autoScalingTarget = new aws.appautoscaling.Target(`${appName}-autoscaling-target`, {
+    maxCapacity: 4,
+    minCapacity: 2,
+    resourceId: pulumi.interpolate`service/${cluster.name}/${service.name}`,
+    scalableDimension: "ecs:service:DesiredCount",
+    serviceNamespace: "ecs",
+});
+
+// CPU-based Auto Scaling Policy
+const cpuScalingPolicy = new aws.appautoscaling.Policy(`${appName}-cpu-scaling`, {
+    policyType: "TargetTrackingScaling",
+    resourceId: autoScalingTarget.resourceId,
+    scalableDimension: autoScalingTarget.scalableDimension,
+    serviceNamespace: autoScalingTarget.serviceNamespace,
+    targetTrackingScalingPolicyConfiguration: {
+        targetValue: 70,
+        predefinedMetricSpecification: {
+            predefinedMetricType: "ECSServiceAverageCPUUtilization",
+        },
+        scaleInCooldown: 300,
+        scaleOutCooldown: 60,
+    },
+});
+
+// Memory-based Auto Scaling Policy
+const memoryScalingPolicy = new aws.appautoscaling.Policy(`${appName}-memory-scaling`, {
+    policyType: "TargetTrackingScaling",
+    resourceId: autoScalingTarget.resourceId,
+    scalableDimension: autoScalingTarget.scalableDimension,
+    serviceNamespace: autoScalingTarget.serviceNamespace,
+    targetTrackingScalingPolicyConfiguration: {
+        targetValue: 80,
+        predefinedMetricSpecification: {
+            predefinedMetricType: "ECSServiceAverageMemoryUtilization",
+        },
+        scaleInCooldown: 300,
+        scaleOutCooldown: 60,
+    },
+});
 
 // =============================================================================
 // CloudWatch Metric Streams to Honeycomb
