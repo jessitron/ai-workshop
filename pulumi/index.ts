@@ -651,6 +651,9 @@ export const secretsManagerSecretArn = secretsManagerSecret.arn;
 export const ecrLoginCommand = pulumi.interpolate`aws ecr get-login-password --region ${aws.getRegionOutput().name} | docker login --username AWS --password-stdin ${ecrRepository.repositoryUrl}`;
 export const dockerBuildCommand = pulumi.interpolate`docker build -t ${ecrRepository.repositoryUrl}:latest ../ && docker push ${ecrRepository.repositoryUrl}:latest`;
 
+// ECS Task Definition
+export const ecsTaskDefinitionArn = taskDefinition.arn;
+
 // Observability
 export const metricStreamName = metricStream.name;
 export const firehoseStreamName = firehoseDeliveryStream.name;
