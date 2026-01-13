@@ -451,7 +451,7 @@ const taskDefinition = new aws.ecs.TaskDefinition(`${appName}-task`, {
             {name: "NODE_ENV", value: nodeEnv},
             {name: "LOG_LEVEL", value: "debug"}, // Set to "debug" for verbose logging, "info" for production
             {name: "DEFAULT_LLM_PROVIDER", value: "bedrock"},
-            {name: "BEDROCK_MODEL", value: "anthropic.claude-3-5-sonnet-20240620-v1:0"},
+            {name: "BEDROCK_MODEL", value: "anthropic.claude-3-5-haiku-20241022-v1:0"},
             {name: "OPENSEARCH_ENDPOINT", value: `https://${opensearchEndpoint}`},
             {name: "OPENSEARCH_INDEX", value: "otel_knowledge"},
             {name: "OPENSEARCH_USERNAME", value: "admin"},

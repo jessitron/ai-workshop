@@ -85,7 +85,7 @@ router.get('/providers', (req, res) => {
         default: default_provider || null,
         models: {
           llm: {
-            name: 'Claude Sonnet 4.5',
+            name: 'Claude 3.5 Haiku',
             id: config.llm.bedrock.model,
             provider: 'AWS Bedrock'
           },
@@ -136,6 +136,54 @@ router.post('/test-provider', async (req, res) => {
       error: 'Failed to test provider',
       message: error.message
     });
+  }
+});
+
+// POST /api/chat/stream - Streaming chat endpoint with Server-Sent Events
+router.post('/stream', validateChatMessage, handleValidationErrors, async (req, res) => {
+  try {
+    const {
+      message,
+      provider = null,
+      maxContextDocs = 5
+    } = req.body;
+
+    logger.info(`Streaming chat request received: "${message}" using Bedrock`);
+
+    // Set headers for Server-Sent Events
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering
+
+    // Generate streaming response
+    const stream = ragService.generateStreamingResponse(message, 'bedrock', maxContextDocs);
+
+    for await (const chunk of stream) {
+      // Send each chunk as a Server-Sent Event
+      res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+      
+      // Flush the response to ensure immediate delivery
+      if (res.flush) {
+        res.flush();
+      }
+    }
+
+    // Close the connection
+    res.end();
+
+  } catch (error) {
+    logger.error('Error in streaming chat endpoint:', error);
+    
+    // Send error as SSE event
+    res.write(`data: ${JSON.stringify({
+      type: 'error',
+      data: {
+        message: error.message
+      }
+    })}\n\n`);
+    
+    res.end();
   }
 });
 
