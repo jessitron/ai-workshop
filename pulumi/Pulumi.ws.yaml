@@ -1,2 +1,4 @@
 environment:
   - honeycomb-pulumi-workshop/ws
+config:
+  aws:region: us-east-1

@@ -13,13 +13,13 @@ export const config = {
     defaultProvider: 'bedrock', // Always use Bedrock
     maxContextLength: parseInt(process.env.MAX_CONTEXT_LENGTH) || 4000,
     temperature: parseFloat(process.env.TEMPERATURE) || 0.7,
-    maxTokens: parseInt(process.env.MAX_TOKENS) || 1000,
+    maxTokens: parseInt(process.env.MAX_TOKENS) || 750,
 
     bedrock: {
       accessKeyId: process.env.AWS_ACCESS_KEY_ID, // Optional - only for local dev
       secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY, // Optional - only for local dev
       region: process.env.AWS_REGION || 'us-east-1',
-      model: process.env.BEDROCK_MODEL || 'anthropic.claude-3-5-sonnet-20240620-v1:0' // Claude 3.5 Sonnet v1
+      model: process.env.BEDROCK_MODEL || 'anthropic.claude-3-5-haiku-20241022-v1:0' // Claude 3.5 Haiku
     }
   },
   

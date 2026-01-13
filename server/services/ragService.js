@@ -344,6 +344,151 @@ Provide a helpful, accurate response based on the context above. think deeply an
       throw error;
     }
   }
+
+  async *generateStreamingResponse(question, providerName = null, maxContextDocs = 5) {
+    const span = tracer.startSpan('rag.generate_streaming_response');
+    
+    try {
+      logger.info(`Generating streaming response for question: "${question}"`);
+
+      // Add question metadata to span
+      span.setAttributes({
+        'rag.question': question,
+        'rag.question_length': question.length,
+        'rag.provider': providerName || 'default',
+        'rag.max_context_docs': maxContextDocs,
+        'rag.streaming': true
+      });
+
+      // Vector search with tracing
+      const relevantDocs = await tracer.startActiveSpan('db.vector.search', async (vectorSpan) => {
+        const vectorStartTime = Date.now();
+
+        try {
+          const results = await vectorStore.similaritySearchWithScore(question, maxContextDocs);
+          const duration = Date.now() - vectorStartTime;
+
+          // Calculate relevance scores
+          const scores = results.map(([, score]) => score);
+          const avgScore = scores.reduce((a, b) => a + b, 0) / scores.length;
+          const maxScore = Math.max(...scores);
+          const minScore = Math.min(...scores);
+
+          vectorSpan.setAttributes({
+            'db.system': 'opensearch',
+            'db.operation': 'vector_search',
+            'db.namespace': process.env.OPENSEARCH_INDEX || 'otel_knowledge',
+            'rag.query': question,
+            'rag.query_length': question.length,
+            'rag.documents_retrieved': results.length,
+            'rag.retrieval_latency_ms': duration,
+            'rag.k': maxContextDocs,
+            'rag.similarity.max': maxScore,
+            'rag.similarity.min': minScore,
+            'rag.similarity.avg': avgScore,
+            'rag.similarity.threshold': minScore
+          });
+
+          vectorSpan.setStatus({ code: SpanStatusCode.OK });
+          vectorSpan.end();
+          return results;
+        } catch (error) {
+          vectorSpan.setAttribute('error.type', error.name || 'VectorSearchError');
+          vectorSpan.setStatus({
+            code: SpanStatusCode.ERROR,
+            message: error.message
+          });
+          vectorSpan.recordException(error);
+          vectorSpan.end();
+          throw error;
+        }
+      });
+
+      // Format context
+      const formattedContext = this.formatContext(relevantDocs);
+
+      // Get LLM provider
+      const llm = llmProvider.getProvider(providerName);
+      const actualProvider = providerName || llmProvider.getAvailableProviders()[0];
+
+      // Yield metadata first
+      yield {
+        type: 'metadata',
+        data: {
+          documentsUsed: relevantDocs.length,
+          sources: this.extractSources(relevantDocs),
+          provider: actualProvider,
+          timestamp: new Date().toISOString()
+        }
+      };
+
+      // Stream LLM response
+      const llmStartTime = Date.now();
+      let totalTokens = 0;
+
+      const stream = await this.promptTemplate
+        .pipe(llm)
+        .stream({
+          context: formattedContext,
+          question: question
+        });
+
+      for await (const chunk of stream) {
+        const content = chunk.content || chunk;
+        if (content) {
+          totalTokens += content.length;
+          yield {
+            type: 'content',
+            data: content
+          };
+        }
+      }
+
+      const duration = Date.now() - llmStartTime;
+
+      span.setAttributes({
+        'rag.documents_used': relevantDocs.length,
+        'rag.response_tokens': totalTokens,
+        'rag.llm.duration_ms': duration,
+        'rag.success': true,
+        'rag.streaming': true
+      });
+
+      span.setStatus({ code: SpanStatusCode.OK });
+      span.end();
+
+      // Yield completion marker
+      yield {
+        type: 'done',
+        data: {
+          duration: duration,
+          tokensGenerated: totalTokens
+        }
+      };
+
+    } catch (error) {
+      logger.error('Error generating streaming RAG response:', error);
+
+      span.setAttributes({
+        'rag.success': false,
+        'rag.error': error.message
+      });
+
+      span.setStatus({
+        code: SpanStatusCode.ERROR,
+        message: error.message
+      });
+      span.recordException(error);
+      span.end();
+
+      yield {
+        type: 'error',
+        data: {
+          message: error.message
+        }
+      };
+    }
+  }
 }
 
 export default new RAGService();
