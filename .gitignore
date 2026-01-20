@@ -104,3 +104,4 @@ ehthumbs.db
 *.tmp
 *.temp
 .memory
+settings.local.json
