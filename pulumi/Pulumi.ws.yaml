@@ -1,2 +1,7 @@
 environment:
   - honeycomb-pulumi-workshop/ws
+config:
+  otel-ai-chatbot-infra:opensearchMasterPassword:
+    secure: AAABAPH9NkSSLHyPLVY9UBjYWLaBFU42hsjzugH1TMxQSxlgpacKBwv9JU5+EbwIBLJZqHzktVE51cTE3HazQuccDJi7lhnle6ntLA==
+  otel-ai-chatbot-infra:honeycombApiKey:
+    secure: AAABANF+CKsJrqRiHLDfzOoNQ50VE2ZcVElzr7vBRPtaRzXvks9SkYFhsEeUABy0MsokA9+DMilc1cxyzZd5/yzFEmeUjJoq0WZNvCeYjlipEv4BXbavvqnYgNpS7apH
