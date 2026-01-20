@@ -32,3 +32,6 @@ pulumi/bin
 docs/
 pulumi/**
 .memory
+
+# Beads workflow
+.beads/
