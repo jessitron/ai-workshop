@@ -47,6 +47,28 @@ An intelligent chatbot application designed to help developers with OpenTelemetr
                     └─────────────────┘
 ```
 
+## 🌐 Your Deployment
+
+**Current Deployment Information:**
+
+- **Application URL**: http://otel-ai-chatbot-alb-5a4a6e9-1683536799.us-east-1.elb.amazonaws.com
+- **Observability (Traces)**: https://ui.honeycomb.io/modernity/environments/pulumi-honeycomb-workshop
+- **Pulumi Stack**: `ws`
+- **Pulumi ESC Environment**: `honeycomb-pulumi-workshop/ws`
+- **AWS Region**: `us-east-1`
+
+**Quick Access:**
+```bash
+# Get application URL
+cd pulumi && pulumi stack output albUrl
+
+# Check health
+curl http://otel-ai-chatbot-alb-5a4a6e9-1683536799.us-east-1.elb.amazonaws.com/api/health
+
+# Run commands with ESC credentials
+pulumi env run honeycomb-pulumi-workshop/ws -i -- <command>
+```
+
 ## 🚀 Quick Start
 
 ### Prerequisites
@@ -83,7 +105,7 @@ An intelligent chatbot application designed to help developers with OpenTelemetr
 
 5. **Deploy infrastructure** (automatically builds and pushes Docker image)
    ```bash
-   pulumi env run <esc-environment> -i -- pulumi up
+   pulumi env run honeycomb-pulumi-workshop/ws -i -- pulumi up
    ```
 
    **First deployment takes ~15-20 minutes** due to Docker build and OpenSearch domain creation.
@@ -96,7 +118,7 @@ An intelligent chatbot application designed to help developers with OpenTelemetr
    export OPENSEARCH_USERNAME=admin
    export OPENSEARCH_PASSWORD=<your-opensearch-password>
 
-   pulumi env run <esc-environment> -i -- node scripts/ingest-data.js
+   pulumi env run honeycomb-pulumi-workshop/ws -i -- node scripts/ingest-data.js
    ```
 
 7. **Access the application**
@@ -130,7 +152,7 @@ pulumi stack output albUrl
 #### Chat API
 - `POST /api/chat` - Send a chat message (uses AWS Bedrock)
   ```bash
-  curl -X POST http://<your-alb-url>/api/chat \
+  curl -X POST http://otel-ai-chatbot-alb-5a4a6e9-1683536799.us-east-1.elb.amazonaws.com/api/chat \
     -H "Content-Type: application/json" \
     -d '{"message": "How do I instrument Express.js?"}'
   ```
@@ -143,7 +165,7 @@ pulumi stack output albUrl
 #### Admin API
 - `POST /api/admin/ingest` - Add documents to knowledge base
   ```bash
-  curl -X POST http://<your-alb-url>/api/admin/ingest \
+  curl -X POST http://otel-ai-chatbot-alb-5a4a6e9-1683536799.us-east-1.elb.amazonaws.com/api/admin/ingest \
     -H "Content-Type: application/json" \
     -d '{
       "title": "Custom OTel Guide",
@@ -169,7 +191,7 @@ This project uses **Pulumi ESC (Environments, Secrets, and Configuration)** for 
 To run commands with Pulumi ESC:
 ```bash
 # General pattern
-pulumi env run <esc-environment> -i -- <command>
+pulumi env run honeycomb-pulumi-workshop/ws -i -- <command>
 
 # Example: List ECS services
 pulumi env run honeycomb-pulumi-workshop/ws -i -- aws ecs list-services --cluster my-cluster
@@ -211,7 +233,7 @@ In production, AWS credentials are provided automatically via IAM role (no keys 
 Add your own documentation to the knowledge base via the admin API:
 
 ```bash
-curl -X POST http://<your-alb-url>/api/admin/ingest \
+curl -X POST http://otel-ai-chatbot-alb-5a4a6e9-1683536799.us-east-1.elb.amazonaws.com/api/admin/ingest \
   -H "Content-Type: application/json" \
   -d '{
     "title": "Custom OTel Guide",
@@ -408,7 +430,7 @@ For detailed deployment instructions, see:
 1. **Pulumi deployment fails**
    - Check Pulumi ESC environment is accessible:
      ```bash
-     pulumi env run <esc-environment> -i -- aws sts get-caller-identity
+     pulumi env run honeycomb-pulumi-workshop/ws -i -- aws sts get-caller-identity
      ```
    - Verify OpenSearch password is set: `pulumi config get opensearchMasterPassword`
    - Check Docker is running (required for automated builds)
@@ -443,7 +465,7 @@ For detailed deployment instructions, see:
 
 ```bash
 # Check Pulumi ESC environment
-pulumi env run <esc-environment> -i -- env | grep AWS
+pulumi env run honeycomb-pulumi-workshop/ws -i -- env | grep AWS
 
 # Get application URL
 cd pulumi && pulumi stack output albUrl
@@ -453,7 +475,7 @@ curl http://<alb-url>/api/health
 curl http://<alb-url>/api/chat/providers
 
 # View ECS task logs
-pulumi env run <esc-environment> -i -- aws logs tail \
+pulumi env run honeycomb-pulumi-workshop/ws -i -- aws logs tail \
   /aws/ecs/otel-ai-chatbot-logs --follow
 
 # Check OpenSearch cluster health
@@ -463,13 +485,13 @@ curl -u admin:<password> https://<opensearch-endpoint>/_cluster/health
 curl http://<alb-url>/api/admin/vector-store/info
 
 # Test Bedrock access
-pulumi env run <esc-environment> -i -- aws bedrock-runtime invoke-model \
+pulumi env run honeycomb-pulumi-workshop/ws -i -- aws bedrock-runtime invoke-model \
   --model-id anthropic.claude-3-5-sonnet-20240620-v1:0 \
   --body '{"anthropic_version":"bedrock-2023-05-31","messages":[{"role":"user","content":"Hello"}],"max_tokens":100}' \
   output.json
 
 # Check ECS service status
-pulumi env run <esc-environment> -i -- aws ecs describe-services \
+pulumi env run honeycomb-pulumi-workshop/ws -i -- aws ecs describe-services \
   --cluster $(cd pulumi && pulumi stack output ecsClusterName) \
   --services $(cd pulumi && pulumi stack output ecsServiceName)
 ```
